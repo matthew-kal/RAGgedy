@@ -1,7 +1,4 @@
-# Secrets - DO NOT COMMIT
 .env
-
-# Local Data - This can get very large
 chroma_data/
-
-context-engine-aws/
+aws/
+IAM-admin.txt

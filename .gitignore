@@ -10,7 +10,9 @@
 
 # Local Data - This can get very large
 chroma_data/
-
+IAM-admin.txt
+deployment-package.zip
+packaged-template.yml
 # Python specific
 __pycache__/
 *.pyc
