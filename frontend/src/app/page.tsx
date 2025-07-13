@@ -1,208 +1,336 @@
 "use client";
-import React, { useRef, useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
+import { motion } from "framer-motion";
+import { toast } from "react-hot-toast";
+import { Sparkles, Brain } from "lucide-react";
+import Particles from "react-particles";
+import { loadSlim } from "tsparticles-slim";
+import type { Container, Engine } from "tsparticles-engine";
 
-// --- MODIFIED: Updated Types ---
-interface Source {
-  filename: string;
-  text: string;
-  score: number;
-}
+// Import types, config, and components
+import { ChatMessage, DocumentStatus } from "../types";
+import { particlesConfig } from "../config/particles";
+import { pageVariants, containerVariants, itemVariants } from "../config/animations";
+import { MAX_STATUS_ATTEMPTS, STATUS_POLL_INTERVAL } from "../config/constants";
+import { UploadSection } from "../components/upload/UploadSection";
+import { ChatSection } from "../components/chat/ChatSection";
 
-interface ChatMessage {
-  sender: "user" | "ai";
-  message: string;
-  sources?: Source[];
-}
+
 
 export default function Home() {
-  // Context input state
-  const [contextText, setContextText] = useState("");
-  const [sourceName, setSourceName] = useState("");
-  const [isIndexing, setIsIndexing] = useState(false);
-  const [lastIndexedSource, setLastIndexedSource] = useState("");
-
+  // --- STATE ---
+  const [fileToUpload, setFileToUpload] = useState<File | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [currentDocumentKey, setCurrentDocumentKey] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isTyping, setIsTyping] = useState(false);
+  
   // Chat state
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Scroll chat to bottom on new message
+  // --- PARTICLE SETUP ---
+  const particlesInit = useCallback(async (engine: Engine) => {
+    await loadSlim(engine);
+  }, []);
+
+  const particlesLoaded = useCallback(async (container: Container | undefined) => {
+    console.log("Particles loaded");
+  }, []);
+
+  // --- EFFECTS ---
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat, isThinking]);
-
-  // Handle context submission
-  const handleAddContext = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!contextText.trim() || !sourceName.trim()) {
-      alert("Please provide both a source name and text content.");
-      return;
+    if (isUploading) {
+      const interval = setInterval(() => {
+        setUploadProgress(prev => Math.min(prev + Math.random() * 15, 90));
+      }, 500);
+      return () => clearInterval(interval);
     }
-    setIsIndexing(true);
-    setLastIndexedSource("");
-    try {
-      const res = await fetch("http://localhost:8001/add-context", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: contextText, source_name: sourceName }),
-      });
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || "Failed to add context");
+  }, [isUploading]);
+
+  // --- HELPER FUNCTIONS ---
+  const handleValidationError = (error: string) => {
+    setErrorMessage(error);
+  };
+
+  const handleStatusChange = (status: string) => {
+    setUploadStatus(status);
+  };
+
+  // --- STATUS POLLING ---
+  const pollStatus = async (documentKey: string) => {
+    const maxAttempts = MAX_STATUS_ATTEMPTS;
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/status/${documentKey}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch status');
+        }
+        
+        const status: DocumentStatus = await response.json();
+        
+        if (status.status === 'processing') {
+          setUploadStatus('🧠 AI is analyzing your document...');
+          attempts++;
+          
+          if (attempts < maxAttempts) {
+            setTimeout(poll, STATUS_POLL_INTERVAL);
+          } else {
+            setUploadStatus('⏱️ Processing timeout - check back later');
+            setIsUploading(false);
+            setUploadProgress(0);
+            toast.error('Processing timeout');
+          }
+        } else if (status.status === 'complete') {
+          setUploadStatus(`✨ Document processed successfully! ${status.chunks_processed || 0} chunks indexed`);
+          setIsUploading(false);
+          setUploadProgress(100);
+          setFileToUpload(null);
+          setCurrentDocumentKey('');
+          toast.success('Document processed successfully!', {
+            icon: '✨',
+            duration: 4000,
+          });
+        } else if (status.status === 'error') {
+          setUploadStatus(`❌ Processing failed: ${status.error_message || 'Unknown error'}`);
+          setIsUploading(false);
+          setUploadProgress(0);
+          toast.error(`Processing failed: ${status.error_message || 'Unknown error'}`);
+        }
+      } catch (error) {
+        console.error('Error polling status:', error);
+        attempts++;
+        
+        if (attempts < maxAttempts) {
+          setTimeout(poll, STATUS_POLL_INTERVAL);
+        } else {
+          setUploadStatus('❌ Error checking status');
+          setIsUploading(false);
+          setUploadProgress(0);
+          toast.error('Error checking status');
+        }
       }
-      setLastIndexedSource(`Successfully added: ${sourceName}`);
-      setContextText("");
-      setSourceName("");
-    } catch (err: any) {
-      setLastIndexedSource(`Error: ${err.message}`);
-    } finally {
-      setIsIndexing(false);
+    };
+    
+    poll();
+  };
+
+  // --- UPLOAD HANDLER ---
+  const handleUpload = async () => {
+    if (!fileToUpload) return;
+    
+    setIsUploading(true);
+    setErrorMessage('');
+    setUploadProgress(0);
+    
+    const uploadToast = toast.loading('Preparing upload...', {
+      icon: '⚡',
+    });
+    
+    try {
+      // Step 1: Get presigned URL
+      setUploadStatus('⚡ Preparing upload...');
+      setUploadProgress(10);
+      
+      const presignedResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/generate-upload-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: fileToUpload.name,
+          contentType: fileToUpload.type
+        })
+      });
+      
+      if (!presignedResponse.ok) {
+        const errorData = await presignedResponse.json();
+        throw new Error(errorData.error || 'Failed to get upload URL');
+      }
+      
+      const presignedData = await presignedResponse.json();
+      setCurrentDocumentKey(presignedData.document_key);
+      
+      // Step 2: Upload to S3
+      setUploadStatus('🚀 Uploading to cloud...');
+      setUploadProgress(30);
+      
+      const formData = new FormData();
+      Object.entries(presignedData.fields).forEach(([key, value]) => {
+        formData.append(key, value as string);
+      });
+      formData.append('file', fileToUpload);
+      
+      const uploadResponse = await fetch(presignedData.url, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload file');
+      }
+      
+      setUploadProgress(60);
+      toast.dismiss(uploadToast);
+      toast.success('Upload complete! Processing...', {
+        icon: '🧠',
+      });
+      
+      // Step 3: Start status polling
+      setUploadStatus('🧠 AI is processing your document...');
+      pollStatus(presignedData.document_key);
+      
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      setErrorMessage(`Upload failed: ${error.message}`);
+      setUploadStatus('');
+      setIsUploading(false);
+      setUploadProgress(0);
+      toast.dismiss(uploadToast);
+      toast.error(`Upload failed: ${error.message}`);
     }
   };
 
-  // Chat submit logic
+  // --- CHAT HANDLERS ---
+  const simulateTyping = (message: string, callback: () => void) => {
+    setIsTyping(true);
+    const typingDuration = Math.min(message.length * 30, 3000);
+    setTimeout(() => {
+      setIsTyping(false);
+      callback();
+    }, typingDuration);
+  };
+
   const handleChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed) return;
-    setChat((prev) => [...prev, { sender: "user", message: trimmed }]);
+    if (!trimmed || isThinking) return;
+    
+    const userMessage: ChatMessage = {
+      sender: "user",
+      message: trimmed,
+      timestamp: new Date()
+    };
+    
+    setChat(prev => [...prev, userMessage]);
     setInput("");
     setIsThinking(true);
+    
     try {
-      const res = await fetch("http://localhost:8001/query", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
       });
+      
       if (!res.ok) {
         const errorData = await res.json();
-        throw new Error(errorData.detail || "Query failed");
+        throw new Error(errorData.error || "Query failed");
       }
+      
       const data = await res.json();
-      setChat((prev) => [
-        ...prev,
-        { sender: "ai", message: data.response || "(No response)", sources: data.sources },
-      ]);
+      
+      simulateTyping(data.response, () => {
+        const aiMessage: ChatMessage = {
+          sender: "ai",
+          message: data.response || "(No response)",
+          sources: data.sources,
+          timestamp: new Date()
+        };
+        setChat(prev => [...prev, aiMessage]);
+      });
+      
     } catch (err: any) {
-      setChat((prev) => [
-        ...prev,
-        { sender: "ai", message: `Error: ${err.message}` },
-      ]);
+      const errorMessage: ChatMessage = {
+        sender: "ai",
+        message: `Error: ${err.message}`,
+        timestamp: new Date()
+      };
+      setChat(prev => [...prev, errorMessage]);
+      toast.error(`Query failed: ${err.message}`);
     } finally {
       setIsThinking(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex items-center justify-center py-8 px-2">
-      <div className="w-full max-w-6xl bg-neutral-900 rounded-2xl shadow-xl flex flex-col md:flex-row overflow-hidden border border-neutral-800">
-        {/* Left: Context Input */}
-        <div className="md:w-1/2 w-full p-8 flex flex-col gap-4 border-b md:border-b-0 md:border-r border-neutral-800">
-          <h2 className="text-xl font-bold mb-2">Add to Knowledge Base</h2>
-          <form onSubmit={handleAddContext} className="flex flex-col gap-4">
-            <div>
-              <label htmlFor="sourceName" className="block text-sm font-medium text-neutral-400 mb-1">
-                Source Name
-              </label>
-              <input
-                id="sourceName"
-                type="text"
-                className="w-full rounded-lg px-4 py-2 bg-neutral-800 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g., Project Nova Memo"
-                value={sourceName}
-                onChange={(e) => setSourceName(e.target.value)}
-                disabled={isIndexing}
-                required
+    <motion.div 
+      className="min-h-screen aurora-bg text-white relative overflow-hidden"
+      variants={pageVariants}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+    >
+      {/* Particle Background */}
+      <Particles
+        id="tsparticles"
+        init={particlesInit}
+        loaded={particlesLoaded}
+        options={particlesConfig}
+        className="absolute inset-0 z-0"
+      />
+      
+      {/* Header */}
+      <motion.header 
+        className="relative z-10 text-center py-8"
+        variants={itemVariants}
+      >
+        <motion.div 
+          className="inline-flex items-center gap-3 mb-4"
+          whileHover={{ scale: 1.05 }}
+        >
+          <Brain className="w-8 h-8 text-blue-400 animate-pulse" />
+          <h1 className="text-4xl font-bold gradient-text">Neural Knowledge Hub</h1>
+          <Sparkles className="w-8 h-8 text-purple-400 animate-pulse" />
+        </motion.div>
+        <motion.p 
+          className="text-xl text-gray-300 max-w-2xl mx-auto"
+          variants={itemVariants}
+        >
+          Transform your documents into searchable knowledge with AI-powered processing
+        </motion.p>
+      </motion.header>
+
+      {/* Main Content */}
+      <motion.div 
+        className="relative z-10 flex items-center justify-center px-4 pb-8"
+        variants={containerVariants}
+      >
+        <div className="w-full max-w-7xl">
+          <motion.div 
+            className="glass-dark rounded-3xl shadow-2xl overflow-hidden border border-white/20 backdrop-blur-xl"
+            variants={itemVariants}
+            whileHover={{ boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)" }}
+          >
+            <div className="flex flex-col lg:flex-row h-[80vh]">
+              <UploadSection
+                fileToUpload={fileToUpload}
+                setFileToUpload={setFileToUpload}
+                uploadStatus={uploadStatus}
+                errorMessage={errorMessage}
+                isUploading={isUploading}
+                uploadProgress={uploadProgress}
+                onUpload={handleUpload}
+                onValidationError={handleValidationError}
+                onStatusChange={handleStatusChange}
+              />
+              
+              <ChatSection
+                chat={chat}
+                input={input}
+                setInput={setInput}
+                isThinking={isThinking}
+                isTyping={isTyping}
+                onChatSubmit={handleChatSubmit}
               />
             </div>
-            <div>
-              <label htmlFor="contextText" className="block text-sm font-medium text-neutral-400 mb-1">
-                Content
-              </label>
-              <textarea
-                id="contextText"
-                rows={15}
-                className="w-full rounded-lg px-4 py-2 bg-neutral-800 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Paste the text content you want the AI to learn here..."
-                value={contextText}
-                onChange={(e) => setContextText(e.target.value)}
-                disabled={isIndexing}
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              className="bg-green-600 hover:bg-green-700 text-white font-semibold px-5 py-2 rounded-lg disabled:opacity-60 transition-colors"
-              disabled={isIndexing || !contextText.trim() || !sourceName.trim()}
-            >
-              {isIndexing ? "Indexing..." : "Add Context"}
-            </button>
-            {lastIndexedSource && <p className="text-sm text-neutral-400 mt-2">{lastIndexedSource}</p>}
-          </form>
+          </motion.div>
         </div>
-        {/* Right: Chat Interface */}
-        <div className="md:w-1/2 w-full flex flex-col h-[600px] p-8 gap-4">
-          <h2 className="text-xl font-bold mb-2">Chat with your Knowledge Base</h2>
-          <div className="flex-1 overflow-y-auto bg-neutral-950 rounded-lg p-4 border border-neutral-800 mb-2" style={{ minHeight: 0 }}>
-            <div className="flex flex-col gap-3">
-              {chat.map((msg, idx) => (
-                <div key={idx} className={`flex flex-col w-full ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div
-                      className={`max-w-[80%] px-4 py-2 rounded-lg text-sm whitespace-pre-line ${msg.sender === "user" ? "bg-blue-900 text-blue-100 rounded-br-none" : "bg-neutral-800 text-neutral-100 rounded-bl-none"}`}
-                    >
-                      {msg.message}
-                    </div>
-                    {/* --- MODIFIED: Detailed Source Component --- */}
-                    {msg.sender === 'ai' && msg.sources && msg.sources.length > 0 && (
-                        <div className="mt-3 self-start w-full text-xs text-neutral-500">
-                            <p className="font-bold mb-1">Sources:</p>
-                            <div className="space-y-2">
-                                {msg.sources.map((source, s_idx) => (
-                                    <details key={s_idx} className="bg-neutral-800/50 p-2 rounded-md transition-all duration-300">
-                                        <summary className="cursor-pointer font-medium text-neutral-400 hover:text-neutral-200">
-                                            {source.filename} (Relevance: {(source.score * 100).toFixed(2)}%)
-                                        </summary>
-                                        <div className="mt-2 p-2 bg-neutral-900/70 rounded text-neutral-300 whitespace-pre-wrap font-mono text-[11px] leading-relaxed border-l-2 border-green-500">
-                                            <code>{source.text}</code>
-                                        </div>
-                                    </details>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </div>
-              ))}
-              {isThinking && (
-                <div className={`max-w-[80%] px-4 py-2 rounded-lg text-sm bg-neutral-800 text-neutral-400 self-start rounded-bl-none animate-pulse`}>
-                  thinking...
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-          </div>
-          <form onSubmit={handleChatSubmit} className="flex gap-2 mt-auto">
-            <input
-              type="text"
-              className="flex-1 rounded-lg px-4 py-2 bg-neutral-800 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Type your question..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={isThinking}
-              autoComplete="off"
-              required
-            />
-            <button
-              type="submit"
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2 rounded-lg disabled:opacity-60 transition-colors"
-              disabled={isThinking || !input.trim()}
-            >
-              Send
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

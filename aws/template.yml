@@ -1,15 +1,20 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Serverless RAG Application with OpenSearch and Bedrock
+Transform: AWS::Serverless-2016-10-31
+Description: Asynchronous RAG Pipeline with File Processing
+
+Globals:
+  Function:
+    Timeout: 60
 
 Parameters:
   StackName:
     Type: String
-    Default: rag-serverless-stack
+    Default: rag-app
     Description: Name of the CloudFormation stack
 
 Resources:
   # IAM Role for Lambda functions
-  LambdaExecutionRole:
+  ProcessingLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -22,23 +27,80 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
       Policies:
-        - PolicyName: OpenSearchServerlessAccess
+        - PolicyName: OpenSearchAndDynamoAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action:
-                  - aoss:APIAccessAll
+                Action: ['aoss:*']
                 Resource: '*'
+              - Effect: Allow
+                Action: ['dynamodb:*']
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProcessingStatusTable}'
 
-  # OpenSearch Serverless Collection
-  RagVectorCollection:
-    Type: AWS::OpenSearchServerless::Collection
+  # S3 Bucket for raw file uploads
+  RawFilesBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      Name: rag-vector-collection
-      Type: VECTORSEARCH
-      Description: Vector collection for RAG application
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAfter7Days
+            Status: Enabled
+            ExpirationInDays: 7
+
+  # S3 Bucket for extracted assets
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+
+  # DynamoDB Table for processing status
+  ProcessingStatusTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: document_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: document_key
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # OpenSearch Serverless Encryption Policy
+  EncryptionSecurityPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: rag-encryption-policy
+      Type: encryption
+      Policy: !Sub |
+        {
+          "Rules": [
+            {
+              "Resource": ["collection/rag-vector-collection"],
+              "ResourceType": "collection"
+            }
+          ],
+          "AWSOwnedKey": true
+        }
+
+  # OpenSearch Serverless Network Policy
+  NetworkSecurityPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: rag-network-policy
+      Type: network
+      Policy: !Sub |
+        [
+          {
+            "Rules": [
+              {
+                "Resource": ["collection/rag-vector-collection"],
+                "ResourceType": "collection"
+              }
+            ],
+            "AllowFromPublic": true
+          }
+        ]
 
   # OpenSearch Serverless Access Policy
   CollectionAccessPolicy:
@@ -60,44 +122,185 @@ Resources:
               "ResourceType": "index"
             }
           ],
-          "Principal": ["${LambdaExecutionRole.Arn}"]
+          "Principal": ["${ProcessingLambdaRole.Arn}"]
         }]
 
-  # Lambda function for ingestion
-  IngestionFunction:
-    Type: AWS::Lambda::Function
+  # OpenSearch Serverless Collection
+  RagVectorCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn:
+      - EncryptionSecurityPolicy
+      - NetworkSecurityPolicy
+      - CollectionAccessPolicy
     Properties:
-      FunctionName: !Sub "${StackName}-ingestion"
-      Code: src/ingestion/
+      Name: rag-vector-collection
+      Type: VECTORSEARCH
+      Description: Vector collection for RAG application
+
+  # Step Functions State Machine
+  IngestionStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: UpdateStatusProcessing
+        States:
+          UpdateStatusProcessing:
+            Type: Task
+            Resource: !GetAtt StatusUpdaterFunction.Arn
+            Parameters:
+              status: processing
+              document_key.$: $.detail.object.key
+            Next: PartitionFile
+          PartitionFile:
+            Type: Task
+            Resource: !GetAtt PartitioningFunction.Arn
+            Parameters:
+              bucket.$: $.detail.bucket.name
+              key.$: $.detail.object.key
+            Next: ParallelProcessing
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: UpdateStatusError
+          ParallelProcessing:
+            Type: Parallel
+            Branches:
+              - StartAt: ProcessTextChunks
+                States:
+                  ProcessTextChunks:
+                    Type: Map
+                    Iterator:
+                      StartAt: ProcessText
+                      States:
+                        ProcessText:
+                          Type: Task
+                          Resource: !GetAtt TextProcessingFunction.Arn
+                          End: true
+                    InputPath: $.texts
+                    End: true
+              - StartAt: ProcessImageChunks
+                States:
+                  ProcessImageChunks:
+                    Type: Map
+                    Iterator:
+                      StartAt: ProcessImage
+                      States:
+                        ProcessImage:
+                          Type: Task
+                          Resource: !GetAtt ImageProcessingFunction.Arn
+                          End: true
+                    InputPath: $.images
+                    End: true
+            Next: UpdateStatusComplete
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: UpdateStatusError
+          UpdateStatusComplete:
+            Type: Task
+            Resource: !GetAtt StatusUpdaterFunction.Arn
+            Parameters:
+              status: complete
+              document_key.$: $.detail.object.key
+            End: true
+          UpdateStatusError:
+            Type: Task
+            Resource: !GetAtt StatusUpdaterFunction.Arn
+            Parameters:
+              status: error
+              document_key.$: $.detail.object.key
+            End: true
+      Policies: !GetAtt ProcessingLambdaRole.Arn
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawFilesBucket
+            Events: s3:ObjectCreated:Put
+
+  # Lambda Functions
+  PresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/presigned_url/
       Handler: handler.lambda_handler
       Runtime: python3.11
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 30
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          RAW_FILES_BUCKET: !Ref RawFilesBucket
+
+  PartitioningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Metadata:
+        Dockerfile: Dockerfile
+        DockerContext: ./src/partition
+      ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StackName}-partitioning-image:latest'
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          ASSETS_BUCKET: !Ref AssetsBucket
+          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+
+  TextProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/text_processor/
+      Handler: handler.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
 
-  # Lambda function for query
+  ImageProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/image_processor/
+      Handler: handler.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+
   QueryFunction:
-    Type: AWS::Lambda::Function
+    Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${StackName}-query"
-      Code: src/query/
+      CodeUri: src/query/
       Handler: handler.lambda_handler
       Runtime: python3.11
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 30
+      Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
 
-  # API Gateway HTTP API
-  RagApi:
-    Type: AWS::ApiGatewayV2::Api
+  StatusUpdaterFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      Name: !Sub "${StackName}-api"
-      Description: API for RAG application
-      ProtocolType: HTTP
+      CodeUri: src/status_updater/
+      Handler: handler.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          STATUS_TABLE: !Ref ProcessingStatusTable
+
+  GetStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/get_status/
+      Handler: handler.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          STATUS_TABLE: !Ref ProcessingStatusTable
+
+  # API Gateway
+  RagApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
       CorsConfiguration:
         AllowOrigins:
           - "*"
@@ -111,66 +314,30 @@ Resources:
           - Authorization
           - X-Api-Key
 
-  # API Gateway Stage
-  ApiStage:
-    Type: AWS::ApiGatewayV2::Stage
+  # API Routes (Events for Lambdas)
+  PresignedUrlEvent:
+    Type: HttpApi
     Properties:
       ApiId: !Ref RagApi
-      StageName: $default
-      AutoDeploy: true
+      Path: /generate-upload-url
+      Method: post
+      FunctionName: !Ref PresignedUrlFunction
 
-  # Lambda permissions for API Gateway
-  IngestionFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt IngestionFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "${RagApi}/*/*"
-
-  QueryFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt QueryFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "${RagApi}/*/*"
-
-  # API Gateway Routes
-  AddContextRoute:
-    Type: AWS::ApiGatewayV2::Route
+  QueryEvent:
+    Type: HttpApi
     Properties:
       ApiId: !Ref RagApi
-      RouteKey: "POST /add-context"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${AddContextIntegration}"
+      Path: /query
+      Method: post
+      FunctionName: !Ref QueryFunction
 
-  QueryRoute:
-    Type: AWS::ApiGatewayV2::Route
+  GetStatusEvent:
+    Type: HttpApi
     Properties:
       ApiId: !Ref RagApi
-      RouteKey: "POST /query"
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${QueryIntegration}"
-
-  # API Gateway Integrations
-  AddContextIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref RagApi
-      Description: Integration for add-context endpoint
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestionFunction.Arn}/invocations"
-      PayloadFormatVersion: "2.0"
-
-  QueryIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref RagApi
-      Description: Integration for query endpoint
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QueryFunction.Arn}/invocations"
-      PayloadFormatVersion: "2.0"
+      Path: /status/{document_key}
+      Method: get
+      FunctionName: !Ref GetStatusFunction
 
 Outputs:
   ApiUrl:
@@ -178,9 +345,3 @@ Outputs:
     Value: !Sub "https://${RagApi}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
       Name: !Sub "${AWS::StackName}-ApiUrl"
-  
-  CollectionEndpoint:
-    Description: OpenSearch Serverless collection endpoint
-    Value: !GetAtt RagVectorCollection.CollectionEndpoint
-    Export:
-      Name: !Sub "${AWS::StackName}-CollectionEndpoint"

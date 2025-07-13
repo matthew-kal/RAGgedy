@@ -1,48 +1,16 @@
 import json
 import os
-import boto3
-from opensearchpy import OpenSearch, RequestsHttpConnection
-from requests_aws4auth import AWS4Auth
 import logging
+from common.utils import create_opensearch_client, create_bedrock_client, get_embedding
 
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize AWS clients
-region = os.environ.get('AWS_REGION', 'us-east-1')
-credentials = boto3.Session().get_credentials()
-awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, 'aoss', session_token=credentials.token)
-
-# Initialize Bedrock client
-bedrock_client = boto3.client('bedrock-runtime', region_name=region)
-
-# Initialize OpenSearch client
+# Initialize AWS clients using shared utilities
 opensearch_endpoint = os.environ['OPENSEARCH_ENDPOINT']
-opensearch_client = OpenSearch(
-    hosts=[{'host': opensearch_endpoint.replace('https://', ''), 'port': 443}],
-    http_auth=awsauth,
-    use_ssl=True,
-    verify_certs=True,
-    connection_class=RequestsHttpConnection
-)
-
-def get_embedding(text):
-    """Generate embedding using Bedrock Titan model"""
-    try:
-        response = bedrock_client.invoke_model(
-            modelId='amazon.titan-embed-text-v1',
-            body=json.dumps({
-                'inputText': text
-            }),
-            contentType='application/json'
-        )
-        
-        response_body = json.loads(response['body'].read())
-        return response_body['embedding']
-    except Exception as e:
-        logger.error(f"Error generating embedding: {str(e)}")
-        raise
+opensearch_client = create_opensearch_client(opensearch_endpoint)
+bedrock_client = create_bedrock_client()
 
 def search_similar_documents(query_embedding, k=5):
     """Search for similar documents in OpenSearch"""
@@ -78,21 +46,14 @@ def search_similar_documents(query_embedding, k=5):
         logger.error(f"Error searching documents: {str(e)}")
         return []
 
-def generate_response(query, context_docs):
+def generate_response(query, context_docs, prompt_template):
     """Generate response using Bedrock Claude model"""
     try:
         # Build context from retrieved documents
         context = "\n\n".join([f"Source: {doc['metadata']['source']}\nContent: {doc['text']}" for doc in context_docs])
         
-        # Construct prompt
-        prompt = f"""You are a helpful AI assistant. Answer the user's question based ONLY on the provided context below. If you cannot answer the question based on the context, please say so.
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
+        # Construct prompt using the provided template
+        prompt = prompt_template.format(context=context, query=query)
 
         # Call Claude model
         response = bedrock_client.invoke_model(
@@ -121,6 +82,16 @@ def lambda_handler(event, context):
     try:
         logger.info(f"Received event: {json.dumps(event)}")
         
+        # Define the prompt template
+        prompt_template = """You are a helpful AI assistant. Answer the user's question based ONLY on the provided context below. If you cannot answer the question based on the context, please say so.
+
+Context:
+{context}
+
+Question: {query}
+
+Answer:"""
+        
         # Parse the request body
         if 'body' in event:
             if isinstance(event['body'], str):
@@ -143,7 +114,7 @@ def lambda_handler(event, context):
             }
         
         # Generate embedding for the query
-        query_embedding = get_embedding(query)
+        query_embedding = get_embedding(query, bedrock_client)
         logger.info("Generated query embedding")
         
         # Search for similar documents
@@ -164,7 +135,7 @@ def lambda_handler(event, context):
             }
         
         # Generate response using retrieved context
-        ai_response = generate_response(query, similar_docs)
+        ai_response = generate_response(query, similar_docs, prompt_template)
         logger.info("Generated AI response")
         
         # Format sources for frontend
