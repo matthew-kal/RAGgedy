@@ -15,6 +15,16 @@ import { MAX_STATUS_ATTEMPTS, STATUS_POLL_INTERVAL } from "../config/constants";
 import { UploadSection } from "../components/upload/UploadSection";
 import { ChatSection } from "../components/chat/ChatSection";
 
+// Define constants at the top
+export const ACCEPTED_FILE_TYPES = ['.pdf', '.docx', '.pptx', '.html', '.txt', '.eml'];
+export const ACCEPTED_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/html',
+  'text/plain',
+  'message/rfc822'
+];
 
 
 export default function Home() {
@@ -52,6 +62,15 @@ export default function Home() {
   }, [isUploading]);
 
   // --- HELPER FUNCTIONS ---
+  const validateFile = (file: File) => {
+    const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+    if (!ACCEPTED_FILE_TYPES.includes(extension) && !ACCEPTED_MIME_TYPES.includes(file.type)) {
+      setErrorMessage(`Unsupported file type. Accepted: ${ACCEPTED_FILE_TYPES.join(', ')}`);
+      return false;
+    }
+    return true;
+  };
+
   const handleValidationError = (error: string) => {
     setErrorMessage(error);
   };
@@ -256,6 +275,20 @@ export default function Home() {
     }
   };
 
+  // --- FILE DROP HANDLER ---
+  const handleFileDrop = (file: File | null) => {
+    if (!file) {
+      setFileToUpload(null);
+      return;
+    }
+    if (validateFile(file)) {
+      setFileToUpload(file);
+      setErrorMessage('');
+    } else {
+      setFileToUpload(null);
+    }
+  };
+
   return (
     <motion.div 
       className="min-h-screen aurora-bg text-white relative overflow-hidden"
@@ -308,14 +341,14 @@ export default function Home() {
             <div className="flex flex-col lg:flex-row h-[80vh]">
               <UploadSection
                 fileToUpload={fileToUpload}
-                setFileToUpload={setFileToUpload}
+                setFileToUpload={handleFileDrop}
                 uploadStatus={uploadStatus}
                 errorMessage={errorMessage}
                 isUploading={isUploading}
                 uploadProgress={uploadProgress}
                 onUpload={handleUpload}
-                onValidationError={handleValidationError}
-                onStatusChange={handleStatusChange}
+                onValidationError={() => {}}
+                onStatusChange={() => {}}
               />
               
               <ChatSection

@@ -7,6 +7,7 @@ from urllib.parse import unquote
 from unstructured.partition.auto import partition
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from botocore.exceptions import ClientError
+import uuid
 
 # Set up logging
 logger = logging.getLogger()
@@ -15,6 +16,7 @@ logger.setLevel(logging.INFO)
 # Initialize AWS clients
 s3_client = boto3.client('s3')
 region = os.environ.get('AWS_REGION', 'us-east-2')
+assets_bucket = os.environ['ASSETS_BUCKET']
 
 # Initialize text splitter
 text_splitter = RecursiveCharacterTextSplitter(
@@ -71,58 +73,63 @@ def lambda_handler(event, context):
         
         for i, element in enumerate(elements):
             try:
-                # Handle text elements
-                if hasattr(element, 'text') and element.text.strip():
+                if element.category == 'Image' and hasattr(element.metadata, 'image_path'):
+                    # Save image to AssetsBucket
+                    image_path = element.metadata.image_path
+                    with open(image_path, 'rb') as img_file:
+                        image_bytes = img_file.read()
+                    
+                    # Generate unique key for image
+                    image_key = f"images/{uuid.uuid4().hex}{element.metadata.image_mime_type or '.jpg'}"
+                    
+                    # Upload to S3
+                    s3_client.put_object(
+                        Bucket=assets_bucket,
+                        Key=image_key,
+                        Body=image_bytes,
+                        ContentType=element.metadata.image_mime_type or 'image/jpeg'
+                    )
+                    
+                    image_s3_uri = f"s3://{assets_bucket}/{image_key}"
+                    image_elements.append({
+                        'image_s3_uri': image_s3_uri,
+                        'metadata': {
+                            'source_filename': os.path.basename(object_key),
+                            'page_number': getattr(element.metadata, 'page_number', None),
+                            'element_id': i
+                        }
+                    })
+                elif hasattr(element, 'text') and element.text.strip():
                     text_elements.append({
                         'text': element.text.strip(),
-                        'element_type': str(type(element).__name__),
-                        'page_number': getattr(element.metadata, 'page_number', None) if hasattr(element, 'metadata') else None,
-                        'element_id': i
+                        'metadata': {
+                            'page_number': getattr(element.metadata, 'page_number', None),
+                            'element_type': str(type(element).__name__),
+                            'element_id': i
+                        }
                     })
-                
-                # Handle image elements (if any)
-                elif hasattr(element, 'metadata') and hasattr(element.metadata, 'image_path'):
-                    # This is a placeholder - actual image handling depends on unstructured version
-                    # For now, we'll skip image elements as they're not commonly extracted this way
-                    pass
-                    
             except Exception as e:
                 logger.warning(f"Error processing element {i}: {str(e)}")
                 continue
         
-        logger.info(f"Extracted {len(text_elements)} text elements")
+        logger.info(f"Extracted {len(text_elements)} text elements and {len(image_elements)} image elements")
         
-        # Combine all text and split into chunks
-        full_text = '\n\n'.join([elem['text'] for elem in text_elements])
-        
-        if not full_text.strip():
-            logger.warning("No text content found in document")
-            return {
-                'texts': [],
-                'images': []
-            }
-        
-        # Split text into chunks
-        chunks = text_splitter.split_text(full_text)
-        logger.info(f"Split text into {len(chunks)} chunks")
-        
-        # Create text objects with metadata
+        # Process text chunks with preserved metadata
         text_objects = []
-        for i, chunk in enumerate(chunks):
-            text_obj = {
-                'text': chunk,
-                'metadata': {
-                    'source_filename': os.path.basename(object_key),
-                    'page_number': None,  # Will be populated from element metadata if available
-                    'chunk_id': i,
-                    'total_chunks': len(chunks)
+        for elem in text_elements:
+            chunks = text_splitter.split_text(elem['text'])
+            for j, chunk in enumerate(chunks):
+                text_obj = {
+                    'text': chunk,
+                    'metadata': {
+                        'source_filename': os.path.basename(object_key),
+                        'page_number': elem['metadata']['page_number'],
+                        'chunk_id': j,
+                        'total_chunks': len(chunks),
+                        'original_element_id': elem['metadata']['element_id']
+                    }
                 }
-            }
-            text_objects.append(text_obj)
-        
-        # For now, return empty images array as image processing is complex
-        # In a full implementation, you'd extract images and upload them to AssetsBucket
-        image_s3_uris = []
+                text_objects.append(text_obj)
         
         # Clean up temporary file
         try:
@@ -132,10 +139,10 @@ def lambda_handler(event, context):
         
         result = {
             'texts': text_objects,
-            'images': image_s3_uris
+            'images': image_elements
         }
         
-        logger.info(f"Returning {len(text_objects)} text objects and {len(image_s3_uris)} image URIs")
+        logger.info(f"Returning {len(text_objects)} text objects and {len(image_elements)} image objects")
         return result
         
     except Exception as e:

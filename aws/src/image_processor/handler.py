@@ -37,21 +37,25 @@ def download_image_from_s3(s3_uri):
         raise
 
 def generate_image_description(image_data, content_type):
-    """Generate description for image using Claude 3 Haiku"""
+    """Generate description for image using Claude 3 Haiku with structured JSON output"""
     try:
         # Encode image to base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
         
-        # Create prompt for image description
-        prompt = """Please provide a detailed description of this image. Include:
-1. Main objects, people, or subjects in the image
-2. Setting or background information
-3. Colors, lighting, and visual style
-4. Any text or numbers visible in the image
-5. Overall context or purpose of the image
+        # Structured prompt for JSON output
+        prompt = """Analyze this image and provide a detailed description in JSON format. Use this exact structure:
 
-Be comprehensive and factual in your description."""
-        
+{
+  "main_subjects": ["list", "of", "main objects or people"],
+  "setting": "description of background or environment",
+  "colors_and_style": "description of colors, lighting, and visual style",
+  "visible_text": "any text or numbers visible in the image",
+  "overall_context": "inferred purpose or context of the image",
+  "detailed_description": "comprehensive paragraph describing the entire image"
+}
+
+Be factual and detailed. If any field is not applicable, use an empty string or array."""
+
         # Call Claude 3 Haiku with image
         response = bedrock_client.invoke_model(
             modelId='anthropic.claude-3-haiku-20240307-v1:0',
@@ -82,7 +86,18 @@ Be comprehensive and factual in your description."""
         )
         
         response_body = json.loads(response['body'].read())
-        description = response_body['content'][0]['text']
+        json_description = response_body['content'][0]['text']
+        
+        # Parse the JSON
+        try:
+            structured_desc = json.loads(json_description)
+            # Combine into a single string for embedding
+            description = json.dumps(structured_desc)
+        except json.JSONDecodeError:
+            description = json_description  # Fallback if not valid JSON
+        
+        # Truncate to safe length for embedding
+        description = description[:20000]
         
         logger.info(f"Generated image description: {len(description)} characters")
         return description

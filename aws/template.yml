@@ -49,6 +49,9 @@ Resources:
           - Id: ExpireAfter7Days
             Status: Enabled
             ExpirationInDays: 7
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
 
   # S3 Bucket for extracted assets
   AssetsBucket:
@@ -142,6 +145,7 @@ Resources:
     Type: AWS::Serverless::StateMachine
     Properties:
       Definition:
+        Comment: "RAG Document Processing State Machine"
         StartAt: UpdateStatusProcessing
         States:
           UpdateStatusProcessing:
@@ -208,13 +212,55 @@ Resources:
               status: error
               document_key.$: $.detail.object.key
             End: true
-      Policies: !GetAtt ProcessingLambdaRole.Arn
-      Events:
-        S3Event:
-          Type: S3
-          Properties:
-            Bucket: !Ref RawFilesBucket
-            Events: s3:ObjectCreated:Put
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StatusUpdaterFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PartitioningFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TextProcessingFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ImageProcessingFunction
+
+  # EventBridge Rule to trigger Step Function on S3 uploads
+  S3UploadEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Trigger Step Function when files are uploaded to RawFilesBucket"
+      EventPattern:
+        source: ["aws.s3"]
+        detail-type: ["Object Created"]
+        detail:
+          bucket:
+            name: [!Ref RawFilesBucket]
+          object:
+            key:
+              - prefix: ""
+      State: ENABLED
+      Targets:
+        - Arn: !Ref IngestionStateMachine
+          Id: "IngestionStateMachineTarget"
+          RoleArn: !GetAtt EventBridgeExecutionRole.Arn
+
+  # IAM Role for EventBridge to execute Step Functions
+  EventBridgeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref IngestionStateMachine
 
   # Lambda Functions
   PresignedUrlFunction:
@@ -227,15 +273,21 @@ Resources:
       Environment:
         Variables:
           RAW_FILES_BUCKET: !Ref RawFilesBucket
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref RagApi
+            Path: /generate-upload-url
+            Method: post
 
   PartitioningFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./src/partition
     Properties:
       PackageType: Image
-      Metadata:
-        Dockerfile: Dockerfile
-        DockerContext: ./src/partition
-      ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StackName}-partitioning-image:latest'
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -274,6 +326,13 @@ Resources:
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref RagApi
+            Path: /query
+            Method: post
 
   StatusUpdaterFunction:
     Type: AWS::Serverless::Function
@@ -296,6 +355,13 @@ Resources:
       Environment:
         Variables:
           STATUS_TABLE: !Ref ProcessingStatusTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref RagApi
+            Path: /status/{document_key}
+            Method: get
 
   # API Gateway
   RagApi:
@@ -314,30 +380,7 @@ Resources:
           - Authorization
           - X-Api-Key
 
-  # API Routes (Events for Lambdas)
-  PresignedUrlEvent:
-    Type: HttpApi
-    Properties:
-      ApiId: !Ref RagApi
-      Path: /generate-upload-url
-      Method: post
-      FunctionName: !Ref PresignedUrlFunction
-
-  QueryEvent:
-    Type: HttpApi
-    Properties:
-      ApiId: !Ref RagApi
-      Path: /query
-      Method: post
-      FunctionName: !Ref QueryFunction
-
-  GetStatusEvent:
-    Type: HttpApi
-    Properties:
-      ApiId: !Ref RagApi
-      Path: /status/{document_key}
-      Method: get
-      FunctionName: !Ref GetStatusFunction
+  # API Routes are now defined as Events in the Lambda functions
 
 Outputs:
   ApiUrl:

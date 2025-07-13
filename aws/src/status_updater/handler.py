@@ -2,7 +2,7 @@ import json
 import boto3
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
 # Set up logging
@@ -48,8 +48,8 @@ def lambda_handler(event, context):
         item = {
             'document_key': document_key,
             'status': status,
-            'timestamp': datetime.utcnow().isoformat(),
-            'updated_at': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat()
         }
         
         # Add additional metadata if provided

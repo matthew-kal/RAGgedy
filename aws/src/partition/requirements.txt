@@ -1,4 +1,7 @@
 boto3
-botocore
-unstructured[all]
-langchain 
+unstructured==0.10.30
+langchain-text-splitters
+numpy<2.0
+lxml
+python-magic
+filetype 
