@@ -1,5 +1,5 @@
 boto3
-unstructured==0.10.30
+unstructured[all-docs]==0.10.30
 langchain-text-splitters
 numpy<2.0
 lxml

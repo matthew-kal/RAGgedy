@@ -4,7 +4,7 @@ Description: Asynchronous RAG Pipeline with File Processing
 
 Globals:
   Function:
-    Timeout: 60
+    Timeout: 600
 
 Parameters:
   StackName:
@@ -154,6 +154,7 @@ Resources:
             Parameters:
               status: processing
               document_key.$: $.detail.object.key
+            ResultPath: null
             Next: PartitionFile
           PartitionFile:
             Type: Task
@@ -164,6 +165,7 @@ Resources:
             Next: ParallelProcessing
             Catch:
               - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
                 Next: UpdateStatusError
           ParallelProcessing:
             Type: Parallel
@@ -178,6 +180,7 @@ Resources:
                         ProcessText:
                           Type: Task
                           Resource: !GetAtt TextProcessingFunction.Arn
+                          ResultPath: null
                           End: true
                     InputPath: $.texts
                     End: true
@@ -191,12 +194,14 @@ Resources:
                         ProcessImage:
                           Type: Task
                           Resource: !GetAtt ImageProcessingFunction.Arn
+                          ResultPath: null
                           End: true
                     InputPath: $.images
                     End: true
             Next: UpdateStatusComplete
             Catch:
               - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
                 Next: UpdateStatusError
           UpdateStatusComplete:
             Type: Task
@@ -204,6 +209,7 @@ Resources:
             Parameters:
               status: complete
               document_key.$: $.detail.object.key
+            ResultPath: null
             End: true
           UpdateStatusError:
             Type: Task
@@ -211,6 +217,7 @@ Resources:
             Parameters:
               status: error
               document_key.$: $.detail.object.key
+            ResultPath: null
             End: true
       Policies:
         - LambdaInvokePolicy:
@@ -288,6 +295,8 @@ Resources:
       DockerContext: ./src/partition
     Properties:
       PackageType: Image
+      Timeout: 600
+      MemorySize: 2048
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:

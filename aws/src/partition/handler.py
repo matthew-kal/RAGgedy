@@ -5,7 +5,7 @@ import logging
 from io import BytesIO
 from urllib.parse import unquote
 from unstructured.partition.auto import partition
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from botocore.exceptions import ClientError
 import uuid
 

@@ -11,4 +11,4 @@ echo "Deploying SAM application..."
 # The --guided flag will walk you through the initial deployment setup,
 # asking for parameters like Stack Name and Region, and then saving them
 # to a samconfig.toml file for future, non-guided deployments.
-sam deploy --guided
+sam deploy --guided --debug
