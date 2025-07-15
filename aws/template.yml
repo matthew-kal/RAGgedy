@@ -39,6 +39,16 @@ Resources:
               - Effect: Allow
                 Action: ['dynamodb:*']
                 Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProcessingStatusTable}'
+              - Effect: Allow
+                Action: ['lambda:InvokeFunction']
+                Resource: 
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+              - Effect: Allow
+                Action: ['ecs:RunTask', 'ecs:DescribeTasks']
+                Resource: '*'
+              - Effect: Allow
+                Action: ['iam:PassRole']
+                Resource: '*'
 
   # S3 Bucket for raw file uploads
   RawFilesBucket:
@@ -156,9 +166,9 @@ Resources:
               document_key.$: $.detail.object.key
             ResultPath: null
             Next: PartitionFile
-          PartitionFile:
+          RouteDocument:
             Type: Task
-            Resource: !GetAtt PartitioningFunction.Arn
+            Resource: !GetAtt DocumentRouterFunction.Arn
             Parameters:
               bucket.$: $.detail.bucket.name
               key.$: $.detail.object.key
@@ -275,7 +285,7 @@ Resources:
     Properties:
       CodeUri: src/presigned_url/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -288,6 +298,37 @@ Resources:
             Path: /generate-upload-url
             Method: post
 
+  # Router Lambda - analyzes document complexity and routes to appropriate processor
+  DocumentRouterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/router/
+      Handler: handler.lambda_handler
+      Runtime: python3.10
+      Timeout: 60  # 1 minute for analysis
+      MemorySize: 512  # Lightweight
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          LIGHT_LAMBDA_NAME: !Ref LightPartitionFunction
+          HEAVY_LAMBDA_NAME: !Ref PartitioningFunction
+
+  # Light Partition Lambda - for simple documents (no detectron2)
+  LightPartitionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/partition_light/
+      Handler: handler.lambda_handler
+      Runtime: python3.10
+      Timeout: 300  # 5 minutes
+      MemorySize: 1024  # Lightweight
+      Role: !GetAtt ProcessingLambdaRole.Arn
+      Environment:
+        Variables:
+          ASSETS_BUCKET: !Ref AssetsBucket
+          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+
+  # Heavy Partition Lambda - for complex documents (with detectron2)
   PartitioningFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -295,8 +336,10 @@ Resources:
       DockerContext: ./src/partition
     Properties:
       PackageType: Image
-      Timeout: 600
-      MemorySize: 2048
+      Timeout: 900  # 15 minutes - maximum allowed
+      MemorySize: 3072  # 3GB - more headroom for 4.57GB image
+      EphemeralStorage:  # More /tmp space for large files
+        Size: 2048  # 2GB temporary storage
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -308,7 +351,7 @@ Resources:
     Properties:
       CodeUri: src/text_processor/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -319,7 +362,7 @@ Resources:
     Properties:
       CodeUri: src/image_processor/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -330,7 +373,7 @@ Resources:
     Properties:
       CodeUri: src/query/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -348,7 +391,7 @@ Resources:
     Properties:
       CodeUri: src/status_updater/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
@@ -359,7 +402,7 @@ Resources:
     Properties:
       CodeUri: src/get_status/
       Handler: handler.lambda_handler
-      Runtime: python3.11
+      Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
