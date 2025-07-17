@@ -1,10 +1,14 @@
 FROM public.ecr.aws/lambda/python:3.10
 
-# Install system dependencies for document processing and minimal build tools
+# Install system dependencies for document processing and build tools
 RUN yum update -y && \
     yum install -y \
     gcc \
     gcc-c++ \
+    make \
+    cmake \
+    git \
+    ninja-build \
     poppler-utils \
     tesseract \
     tesseract-langpack-eng \
@@ -12,13 +16,17 @@ RUN yum update -y && \
     file \
     && yum clean all
 
-# Copy requirements.txt (do this before installing to leverage Docker cache)
+# Copy requirements.txt
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 
-# First, install torch as a standalone dependency
-RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision
+# Install basic dependencies first including wheel for building
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
-# Second, install the rest of the packages from your requirements file
+# Install core dependencies
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision matplotlib numpy pillow
+
+# Install the remaining dependencies 
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your function code

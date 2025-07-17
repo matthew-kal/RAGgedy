@@ -29,13 +29,13 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
         - arn:aws:iam::aws:policy/AmazonS3FullAccess
       Policies:
-        - PolicyName: OpenSearchAndDynamoAccess
+        - PolicyName: DynamoAccess #AndOpenSearchAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
-                Action: ['aoss:*']
-                Resource: '*'
+              # - Effect: Allow
+              #   Action: ['aoss:*']
+              #   Resource: '*'
               - Effect: Allow
                 Action: ['dynamodb:*']
                 Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProcessingStatusTable}'
@@ -79,76 +79,76 @@ Resources:
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
 
-  # OpenSearch Serverless Encryption Policy
-  EncryptionSecurityPolicy:
-    Type: AWS::OpenSearchServerless::SecurityPolicy
-    Properties:
-      Name: rag-encryption-policy
-      Type: encryption
-      Policy: !Sub |
-        {
-          "Rules": [
-            {
-              "Resource": ["collection/rag-vector-collection"],
-              "ResourceType": "collection"
-            }
-          ],
-          "AWSOwnedKey": true
-        }
+# OpenSearch Serverless Encryption Policy
+# EncryptionSecurityPolicy:
+#   Type: AWS::OpenSearchServerless::SecurityPolicy
+#   Properties:
+#     Name: rag-encryption-policy
+#     Type: encryption
+#     Policy: !Sub |
+#       {
+#         "Rules": [
+#           {
+#             "Resource": ["collection/rag-vector-collection"],
+#             "ResourceType": "collection"
+#           }
+#         ],
+#         "AWSOwnedKey": true
+#       }
 
-  # OpenSearch Serverless Network Policy
-  NetworkSecurityPolicy:
-    Type: AWS::OpenSearchServerless::SecurityPolicy
-    Properties:
-      Name: rag-network-policy
-      Type: network
-      Policy: !Sub |
-        [
-          {
-            "Rules": [
-              {
-                "Resource": ["collection/rag-vector-collection"],
-                "ResourceType": "collection"
-              }
-            ],
-            "AllowFromPublic": true
-          }
-        ]
+# OpenSearch Serverless Network Policy
+# NetworkSecurityPolicy:
+#   Type: AWS::OpenSearchServerless::SecurityPolicy
+#   Properties:
+#     Name: rag-network-policy
+#     Type: network
+#     Policy: !Sub |
+#       [
+#         {
+#           "Rules": [
+#             {
+#               "Resource": ["collection/rag-vector-collection"],
+#               "ResourceType": "collection"
+#             }
+#           ],
+#           "AllowFromPublic": true
+#         }
+#       ]
 
-  # OpenSearch Serverless Access Policy
-  CollectionAccessPolicy:
-    Type: AWS::OpenSearchServerless::AccessPolicy
-    Properties:
-      Name: rag-collection-access-policy
-      Type: data
-      Policy: !Sub |
-        [{
-          "Rules": [
-            {
-              "Resource": ["collection/rag-vector-collection"],
-              "Permission": ["aoss:CreateCollectionItems"],
-              "ResourceType": "collection"
-            },
-            {
-              "Resource": ["index/rag-vector-collection/*"],
-              "Permission": ["aoss:CreateIndex", "aoss:DeleteIndex", "aoss:UpdateIndex", "aoss:DescribeIndex", "aoss:ReadDocument", "aoss:WriteDocument"],
-              "ResourceType": "index"
-            }
-          ],
-          "Principal": ["${ProcessingLambdaRole.Arn}"]
-        }]
+# OpenSearch Serverless Access Policy
+# CollectionAccessPolicy:
+#   Type: AWS::OpenSearchServerless::AccessPolicy
+#   Properties:
+#     Name: rag-collection-access-policy
+#     Type: data
+#     Policy: !Sub |
+#       [{
+#         "Rules": [
+#           {
+#             "Resource": ["collection/rag-vector-collection"],
+#             "Permission": ["aoss:CreateCollectionItems"],
+#             "ResourceType": "collection"
+#           },
+#           {
+#             "Resource": ["index/rag-vector-collection/*"],
+#             "Permission": ["aoss:CreateIndex", "aoss:DeleteIndex", "aoss:UpdateIndex", "aoss:DescribeIndex", "aoss:ReadDocument", "aoss:WriteDocument"],
+#             "ResourceType": "index"
+#           }
+#         ],
+#         "Principal": ["${ProcessingLambdaRole.Arn}"]
+#       }]
 
-  # OpenSearch Serverless Collection
-  RagVectorCollection:
-    Type: AWS::OpenSearchServerless::Collection
-    DependsOn:
-      - EncryptionSecurityPolicy
-      - NetworkSecurityPolicy
-      - CollectionAccessPolicy
-    Properties:
-      Name: rag-vector-collection
-      Type: VECTORSEARCH
-      Description: Vector collection for RAG application
+# OpenSearch Serverless Collection
+# RagVectorCollection:
+#   Type: AWS::OpenSearchServerless::Collection
+#   DependsOn:
+#     - EncryptionSecurityPolicy
+#     - NetworkSecurityPolicy
+#     - CollectionAccessPolicy
+#   Properties:
+#     Name: rag-vector-collection
+#     Type: VECTORSEARCH
+#     Description: Vector collection for RAG application
 
   # Step Functions State Machine
   IngestionStateMachine:
@@ -190,7 +190,7 @@ Resources:
                         ProcessText:
                           Type: Task
                           Resource: !GetAtt TextProcessingFunction.Arn
-                          ResultPath: null
+                          # ResultPath: null  # REMOVE to collect output
                           End: true
                     InputPath: $.texts
                     End: true
@@ -204,10 +204,21 @@ Resources:
                         ProcessImage:
                           Type: Task
                           Resource: !GetAtt ImageProcessingFunction.Arn
-                          ResultPath: null
+                          # ResultPath: null  # REMOVE to collect output
                           End: true
                     InputPath: $.images
                     End: true
+            ResultPath: $.ProcessedData
+            Next: AggregateAndSaveResults
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: UpdateStatusError
+          AggregateAndSaveResults:
+            Type: Task
+            Resource: !GetAtt AggregationFunction.Arn
+            InputPath: $.ProcessedData
+            ResultPath: null
             Next: UpdateStatusComplete
             Catch:
               - ErrorEquals: ["States.ALL"]
@@ -368,23 +379,34 @@ Resources:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
 
-  QueryFunction:
+  # QueryFunction:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     CodeUri: src/query/
+  #     Handler: handler.lambda_handler
+  #     Runtime: python3.10
+  #     Role: !GetAtt ProcessingLambdaRole.Arn
+  #     Environment:
+  #       Variables:
+  #         OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+  #     Events:
+  #       Api:
+  #         Type: HttpApi
+  #         Properties:
+  #           ApiId: !Ref RagApi
+  #           Path: /query
+  #           Method: post
+
+  AggregationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/query/
+      CodeUri: src/aggregator/
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
-          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref RagApi
-            Path: /query
-            Method: post
+          ASSETS_BUCKET: !Ref AssetsBucket
 
   StatusUpdaterFunction:
     Type: AWS::Serverless::Function

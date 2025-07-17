@@ -4,5 +4,4 @@ numpy<2.0
 lxml
 python-magic
 filetype
-git+https://github.com/facebookresearch/detectron2.git
 unstructured[all-docs]==0.10.30

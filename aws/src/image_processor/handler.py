@@ -4,15 +4,15 @@ import boto3
 import base64
 import logging
 from urllib.parse import urlparse
-from common.utils import create_opensearch_client, create_bedrock_client, get_embedding
+from common.utils import create_bedrock_client
 
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Initialize AWS clients using shared utilities
-opensearch_endpoint = os.environ['OPENSEARCH_ENDPOINT']
-opensearch_client = create_opensearch_client(opensearch_endpoint)
+# opensearch_endpoint = os.environ['OPENSEARCH_ENDPOINT']
+# opensearch_client = create_opensearch_client(opensearch_endpoint)
 bedrock_client = create_bedrock_client()
 s3_client = boto3.client('s3')
 
@@ -107,7 +107,7 @@ Be factual and detailed. If any field is not applicable, use an empty string or 
         raise
 
 def lambda_handler(event, context):
-    """Process image and index its description into OpenSearch"""
+    """Process image and return description for aggregation"""
     try:
         logger.info(f"Received event: {json.dumps(event)}")
         
@@ -139,49 +139,15 @@ def lambda_handler(event, context):
             logger.error(f"Error generating description: {str(e)}")
             raise
         
-        # Generate embedding for the description
-        try:
-            embedding = get_embedding(description, bedrock_client)
-            logger.info("Generated embedding for image description")
-        except Exception as e:
-            logger.error(f"Error generating embedding: {str(e)}")
-            raise
-        
-        # Prepare document for indexing
-        document = {
-            'embedding': embedding,
-            'text': description,
-            'metadata': {
-                'source': metadata.get('source_filename', 'unknown'),
-                'source_filename': metadata.get('source_filename', 'unknown'),
-                'page_number': metadata.get('page_number'),
-                'content_type': 'image',
-                'image_s3_uri': image_s3_uri,
-                'image_content_type': content_type,
-                'processed_at': context.aws_request_id if context else None
-            }
+        # Return processed data for aggregation
+        return {
+            'statusCode': 200,
+            'image_s3_uri': image_s3_uri,
+            'llm_generated_description': description,
+            'metadata': metadata,
+            'content_type': 'image',
+            'image_content_type': content_type
         }
-        
-        # Index document into OpenSearch
-        try:
-            response = opensearch_client.index(
-                index='rag-index',
-                body=document
-            )
-            
-            logger.info(f"Successfully indexed image description. Document ID: {response.get('_id')}")
-            
-            return {
-                'statusCode': 200,
-                'message': 'Image processed and indexed successfully',
-                'document_id': response.get('_id'),
-                'image_s3_uri': image_s3_uri,
-                'description_length': len(description)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error indexing document: {str(e)}")
-            raise
         
     except Exception as e:
         logger.error(f"Error in lambda_handler: {str(e)}")

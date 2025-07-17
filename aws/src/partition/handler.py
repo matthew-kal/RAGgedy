@@ -9,6 +9,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from botocore.exceptions import ClientError
 import uuid
 
+os.environ["UNSTRUCTURED_HI_RES_MODEL_NAME"] = "detectron2_onnx"
+
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -59,10 +61,10 @@ def lambda_handler(event, context):
         with open(temp_file_path, 'wb') as f:
             f.write(file_content)
         
-        # Partition the document using unstructured
+        # Partition the document using unstructured with ONNX detectron2 model
         try:
-            elements = partition(filename=temp_file_path)
-            logger.info(f"Partitioned document into {len(elements)} elements")
+            elements = partition(filename=temp_file_path, strategy="hi_res")
+            logger.info(f"Partitioned document into {len(elements)} elements using ONNX detectron2")
         except Exception as e:
             logger.error(f"Error partitioning document: {str(e)}")
             raise
