@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Asynchronous RAG Pipeline with File Processing
+Description: Simplified Asynchronous RAG Pipeline with File Processing
 
 Globals:
   Function:
@@ -29,13 +29,10 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
         - arn:aws:iam::aws:policy/AmazonS3FullAccess
       Policies:
-        - PolicyName: DynamoAccess #AndOpenSearchAccess
+        - PolicyName: DynamoAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # - Effect: Allow
-              #   Action: ['aoss:*']
-              #   Resource: '*'
               - Effect: Allow
                 Action: ['dynamodb:*']
                 Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProcessingStatusTable}'
@@ -43,12 +40,6 @@ Resources:
                 Action: ['lambda:InvokeFunction']
                 Resource: 
                   - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
-              - Effect: Allow
-                Action: ['ecs:RunTask', 'ecs:DescribeTasks']
-                Resource: '*'
-              - Effect: Allow
-                Action: ['iam:PassRole']
-                Resource: '*'
 
   # S3 Bucket for raw file uploads
   RawFilesBucket:
@@ -79,83 +70,23 @@ Resources:
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
 
-# OpenSearch Serverless Encryption Policy
-# EncryptionSecurityPolicy:
-#   Type: AWS::OpenSearchServerless::SecurityPolicy
-#   Properties:
-#     Name: rag-encryption-policy
-#     Type: encryption
-#     Policy: !Sub |
-#       {
-#         "Rules": [
-#           {
-#             "Resource": ["collection/rag-vector-collection"],
-#             "ResourceType": "collection"
-#           }
-#         ],
-#         "AWSOwnedKey": true
-#       }
-
-# OpenSearch Serverless Network Policy
-# NetworkSecurityPolicy:
-#   Type: AWS::OpenSearchServerless::SecurityPolicy
-#   Properties:
-#     Name: rag-network-policy
-#     Type: network
-#     Policy: !Sub |
-#       [
-#         {
-#           "Rules": [
-#             {
-#               "Resource": ["collection/rag-vector-collection"],
-#               "ResourceType": "collection"
-#             }
-#           ],
-#           "AllowFromPublic": true
-#         }
-#       ]
-
-# OpenSearch Serverless Access Policy
-# CollectionAccessPolicy:
-#   Type: AWS::OpenSearchServerless::AccessPolicy
-#   Properties:
-#     Name: rag-collection-access-policy
-#     Type: data
-#     Policy: !Sub |
-#       [{
-#         "Rules": [
-#           {
-#             "Resource": ["collection/rag-vector-collection"],
-#             "Permission": ["aoss:CreateCollectionItems"],
-#             "ResourceType": "collection"
-#           },
-#           {
-#             "Resource": ["index/rag-vector-collection/*"],
-#             "Permission": ["aoss:CreateIndex", "aoss:DeleteIndex", "aoss:UpdateIndex", "aoss:DescribeIndex", "aoss:ReadDocument", "aoss:WriteDocument"],
-#             "ResourceType": "index"
-#           }
-#         ],
-#         "Principal": ["${ProcessingLambdaRole.Arn}"]
-#       }]
-
-# OpenSearch Serverless Collection
-# RagVectorCollection:
-#   Type: AWS::OpenSearchServerless::Collection
-#   DependsOn:
-#     - EncryptionSecurityPolicy
-#     - NetworkSecurityPolicy
-#     - CollectionAccessPolicy
-#   Properties:
-#     Name: rag-vector-collection
-#     Type: VECTORSEARCH
-#     Description: Vector collection for RAG application
+  # Lambda Layer for shared utilities
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${StackName}-common-layer"
+      Description: Shared utilities for RAG pipeline
+      ContentUri: src/layers/common/
+      CompatibleRuntimes:
+        - python3.10
+      RetentionPolicy: Delete
 
   # Step Functions State Machine
   IngestionStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
       Definition:
-        Comment: "RAG Document Processing State Machine"
+        Comment: "Simplified RAG Document Processing State Machine"
         StartAt: UpdateStatusProcessing
         States:
           UpdateStatusProcessing:
@@ -166,9 +97,9 @@ Resources:
               document_key.$: $.detail.object.key
             ResultPath: null
             Next: PartitionFile
-          RouteDocument:
+          PartitionFile:
             Type: Task
-            Resource: !GetAtt DocumentRouterFunction.Arn
+            Resource: !GetAtt PartitioningFunction.Arn
             Parameters:
               bucket.$: $.detail.bucket.name
               key.$: $.detail.object.key
@@ -190,9 +121,8 @@ Resources:
                         ProcessText:
                           Type: Task
                           Resource: !GetAtt TextProcessingFunction.Arn
-                          # ResultPath: null  # REMOVE to collect output
                           End: true
-                    InputPath: $.texts
+                    InputPath: "$.partition_result.texts"
                     End: true
               - StartAt: ProcessImageChunks
                 States:
@@ -204,9 +134,8 @@ Resources:
                         ProcessImage:
                           Type: Task
                           Resource: !GetAtt ImageProcessingFunction.Arn
-                          # ResultPath: null  # REMOVE to collect output
                           End: true
-                    InputPath: $.images
+                    InputPath: "$.partition_result.images"
                     End: true
             ResultPath: $.ProcessedData
             Next: AggregateAndSaveResults
@@ -249,6 +178,8 @@ Resources:
             FunctionName: !Ref TextProcessingFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref ImageProcessingFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AggregationFunction
 
   # EventBridge Rule to trigger Step Function on S3 uploads
   S3UploadEventRule:
@@ -298,6 +229,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
+      Layers:
+        - !Ref CommonLayer
       Environment:
         Variables:
           RAW_FILES_BUCKET: !Ref RawFilesBucket
@@ -309,37 +242,7 @@ Resources:
             Path: /generate-upload-url
             Method: post
 
-  # Router Lambda - analyzes document complexity and routes to appropriate processor
-  DocumentRouterFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: src/router/
-      Handler: handler.lambda_handler
-      Runtime: python3.10
-      Timeout: 60  # 1 minute for analysis
-      MemorySize: 512  # Lightweight
-      Role: !GetAtt ProcessingLambdaRole.Arn
-      Environment:
-        Variables:
-          LIGHT_LAMBDA_NAME: !Ref LightPartitionFunction
-          HEAVY_LAMBDA_NAME: !Ref PartitioningFunction
-
-  # Light Partition Lambda - for simple documents (no detectron2)
-  LightPartitionFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: src/partition_light/
-      Handler: handler.lambda_handler
-      Runtime: python3.10
-      Timeout: 300  # 5 minutes
-      MemorySize: 1024  # Lightweight
-      Role: !GetAtt ProcessingLambdaRole.Arn
-      Environment:
-        Variables:
-          ASSETS_BUCKET: !Ref AssetsBucket
-          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
-
-  # Heavy Partition Lambda - for complex documents (with detectron2)
+  # Heavy Partition Lambda - for all documents (with detectron2)
   PartitioningFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -348,14 +251,13 @@ Resources:
     Properties:
       PackageType: Image
       Timeout: 900  # 15 minutes - maximum allowed
-      MemorySize: 3072  # 3GB - more headroom for 4.57GB image
+      MemorySize: 3072  # 3GB - more headroom for detectron2
       EphemeralStorage:  # More /tmp space for large files
         Size: 2048  # 2GB temporary storage
       Role: !GetAtt ProcessingLambdaRole.Arn
       Environment:
         Variables:
           ASSETS_BUCKET: !Ref AssetsBucket
-          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
 
   TextProcessingFunction:
     Type: AWS::Serverless::Function
@@ -364,9 +266,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
-      Environment:
-        Variables:
-          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
+      Layers:
+        - !Ref CommonLayer
 
   ImageProcessingFunction:
     Type: AWS::Serverless::Function
@@ -375,27 +276,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
-      Environment:
-        Variables:
-          OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
-
-  # QueryFunction:
-  #   Type: AWS::Serverless::Function
-  #   Properties:
-  #     CodeUri: src/query/
-  #     Handler: handler.lambda_handler
-  #     Runtime: python3.10
-  #     Role: !GetAtt ProcessingLambdaRole.Arn
-  #     Environment:
-  #       Variables:
-  #         OPENSEARCH_ENDPOINT: !GetAtt RagVectorCollection.CollectionEndpoint
-  #     Events:
-  #       Api:
-  #         Type: HttpApi
-  #         Properties:
-  #           ApiId: !Ref RagApi
-  #           Path: /query
-  #           Method: post
+      Layers:
+        - !Ref CommonLayer
 
   AggregationFunction:
     Type: AWS::Serverless::Function
@@ -404,6 +286,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
+      Layers:
+        - !Ref CommonLayer
       Environment:
         Variables:
           ASSETS_BUCKET: !Ref AssetsBucket
@@ -415,6 +299,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
+      Layers:
+        - !Ref CommonLayer
       Environment:
         Variables:
           STATUS_TABLE: !Ref ProcessingStatusTable
@@ -426,6 +312,8 @@ Resources:
       Handler: handler.lambda_handler
       Runtime: python3.10
       Role: !GetAtt ProcessingLambdaRole.Arn
+      Layers:
+        - !Ref CommonLayer
       Environment:
         Variables:
           STATUS_TABLE: !Ref ProcessingStatusTable
@@ -454,11 +342,21 @@ Resources:
           - Authorization
           - X-Api-Key
 
-  # API Routes are now defined as Events in the Lambda functions
-
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL
     Value: !Sub "https://${RagApi}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
       Name: !Sub "${AWS::StackName}-ApiUrl"
+  
+  RawFilesBucket:
+    Description: S3 bucket for raw file uploads
+    Value: !Ref RawFilesBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-RawFilesBucket"
+  
+  AssetsBucket:
+    Description: S3 bucket for processed assets
+    Value: !Ref AssetsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-AssetsBucket"

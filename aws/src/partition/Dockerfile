@@ -1,36 +1,29 @@
-FROM public.ecr.aws/lambda/python:3.10
+# Use the official, more robust Python 3.10 slim image as our base
+FROM python:3.10-slim-bullseye
 
-# Install system dependencies for document processing and build tools
-RUN yum update -y && \
-    yum install -y \
-    gcc \
-    gcc-c++ \
-    make \
-    cmake \
-    git \
-    ninja-build \
+# Set the working directory using the standard Lambda path
+WORKDIR /var/task
+
+# Install Tesseract, Poppler, and other system dependencies using apt-get
+RUN apt-get update && \
+    apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     poppler-utils \
-    tesseract \
-    tesseract-langpack-eng \
-    libmagic \
-    file \
-    && yum clean all
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt
-COPY requirements.txt ${LAMBDA_TASK_ROOT}
+# Copy the requirements file
+COPY requirements.txt .
 
-# Install basic dependencies first including wheel for building
-RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+# Install the AWS Lambda Runtime Interface Client (RIC) and Python dependencies
+RUN pip install --no-cache-dir awslambdaric && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Install core dependencies
-RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
-    torch torchvision matplotlib numpy pillow
+# Copy the function handler code
+COPY handler.py .
 
-# Install the remaining dependencies 
-RUN pip install --no-cache-dir -r requirements.txt
+# Set the entry point to the Lambda Runtime Interface Client
+ENTRYPOINT [ "/usr/local/bin/python", "-m", "awslambdaric" ]
 
-# Copy the rest of your function code
-COPY handler.py ${LAMBDA_TASK_ROOT}
-
-# Set the CMD to your handler
-CMD ["handler.lambda_handler"]
+# Set the command to the function handler
+CMD [ "handler.lambda_handler" ]

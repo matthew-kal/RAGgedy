@@ -1,5 +1,0 @@
-boto3
-langchain-text-splitters
-python-magic
-filetype
-unstructured==0.10.30 
