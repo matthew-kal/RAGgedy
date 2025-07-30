@@ -10,7 +10,7 @@ logger.setLevel(logging.INFO)
 
 def create_opensearch_client(opensearch_endpoint):
     """Create and return a configured OpenSearch client"""
-    region = os.environ.get('AWS_REGION', 'us-east-2')
+    region = os.environ.get('AWS_REGION', 'us-east-1')
     credentials = boto3.Session().get_credentials()
     awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, 'aoss', session_token=credentials.token)
     
@@ -23,7 +23,7 @@ def create_opensearch_client(opensearch_endpoint):
     )
     return client
 
-def create_bedrock_client(region='us-east-2'):
+def create_bedrock_client(region='us-east-1'):
     """Create and return a configured Bedrock client"""
     return boto3.client('bedrock-runtime', region_name=region)
 

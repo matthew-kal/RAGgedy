@@ -17,7 +17,7 @@ logger.setLevel(logging.INFO)
 
 # Initialize AWS clients
 s3_client = boto3.client('s3')
-region = os.environ.get('AWS_REGION', 'us-east-2')
+region = os.environ.get('AWS_REGION', 'us-east-1')
 assets_bucket = os.environ['ASSETS_BUCKET']
 
 # Initialize text splitter

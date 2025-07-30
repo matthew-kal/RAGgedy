@@ -251,7 +251,7 @@ Resources:
     Properties:
       PackageType: Image
       Timeout: 900  # 15 minutes - maximum allowed
-      MemorySize: 3072  # 3GB - more headroom for detectron2
+      MemorySize: 3008  # 3GB - more headroom for detectron2
       EphemeralStorage:  # More /tmp space for large files
         Size: 2048  # 2GB temporary storage
       Role: !GetAtt ProcessingLambdaRole.Arn
