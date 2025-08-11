@@ -1,7 +1,0 @@
-boto3
-langchain-text-splitters
-numpy<2.0
-lxml
-python-magic
-filetype
-unstructured[all-docs]==0.10.30
