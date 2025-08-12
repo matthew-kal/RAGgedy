@@ -4,6 +4,9 @@ import { ColumnType } from 'kysely';
 export interface ProjectsTable {
     id: string; // Primary Key, UUID
     name: string;
+    description: string;
+    lastAccessed: ColumnType<Date, string, string>;
+    documentCount: number;
     createdAt: ColumnType<Date, string, string>;
 }
 

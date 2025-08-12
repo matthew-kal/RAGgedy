@@ -10,6 +10,9 @@ export async function setupDatabase() {
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('name', 'text', (col) => col.notNull())
+        .addColumn('description', 'text', (col) => col.notNull().defaultTo(''))
+        .addColumn('lastAccessed', 'text', (col) => col.notNull())
+        .addColumn('documentCount', 'integer', (col) => col.notNull().defaultTo(0))
         .addColumn('createdAt', 'text', (col) => col.notNull())
         .execute();
 

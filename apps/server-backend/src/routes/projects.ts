@@ -1,23 +1,67 @@
-// Example: Create a new project
-server.post('/projects', async (request, reply) => {
-    const { name } = request.body as { name: string };
-    const newProjectId = crypto.randomUUID();
+import { FastifyInstance } from 'fastify';
+import { db } from '../db';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import type { Project } from 'shared-types';
 
-    // Create a directory for the project's files
-    const projectPath = `./data/${newProjectId}`;
-    await fs.promises.mkdir(projectPath, { recursive: true });
+export async function projectRoutes(server: FastifyInstance) {
+    /**
+     * Route to CREATE a new project.
+     * ACCEPTS the full project object from the client, as requested.
+     * The server will override the client's 'id' with a secure, unique one.
+     */
+    server.post<{ Body: Project }>('/projects', async (request, reply) => {
+        const projectFromClient = request.body;
 
-    const newProject = await db
-        .insertInto('projects')
-        .values({ id: newProjectId, name })
-        .returningAll()
-        .executeTakeFirstOrThrow();
+        // 1. Validate the required 'name' field from the client's object
+        if (!projectFromClient.name || typeof projectFromClient.name !== 'string' || projectFromClient.name.trim() === '') {
+            return reply.code(400).send({ error: 'Project name is required and cannot be empty.' });
+        }
 
-    return reply.code(201).send(newProject);
-});
+        // 2. Generate a new, secure ID on the server, ignoring any ID from the client
+        const newId = randomUUID();
+        const projectPath = path.resolve(process.cwd(), 'data', newId);
 
-// Example: Get all projects
-server.get('/projects', async (request, reply) => {
-    const projects = await db.selectFrom('projects').selectAll().execute();
-    return projects;
-});
+        // 3. Prepare the final object for the database using client data
+        const projectForDb = {
+            id: newId, // Use the new server-generated ID
+            name: projectFromClient.name,
+            description: projectFromClient.description || '',
+            createdAt: projectFromClient.createdAt,
+            lastAccessed: projectFromClient.lastAccessed,
+            documentCount: projectFromClient.documentCount || 0,
+        };
+
+        try {
+            await fs.mkdir(projectPath, { recursive: true });
+
+            const newProject = await db
+                .insertInto('projects')
+                .values(projectForDb)
+                .returningAll()
+                .executeTakeFirstOrThrow();
+            
+            // 4. Return the complete project object with the correct ID
+            return reply.code(201).send(newProject);
+
+        } catch (error: any) {
+            server.log.error(error, 'Failed to create project');
+            await fs.rm(projectPath, { recursive: true, force: true }).catch(() => {});
+            return reply.code(500).send({ error: 'An unexpected error occurred on the server.' });
+        }
+    });
+
+    /**
+     * Route to GET a list of all existing projects.
+     */
+    server.get('/projects', async (request, reply) => {
+        try {
+            const projects = await db.selectFrom('projects').selectAll().orderBy('createdAt', 'desc').execute();
+            return reply.code(200).send(projects);
+        } catch (error) {
+            server.log.error(error, 'Failed to retrieve projects');
+            return reply.code(500).send({ error: 'Failed to retrieve projects from the database.' });
+        }
+    });
+}

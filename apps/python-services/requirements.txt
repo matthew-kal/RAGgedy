@@ -1,0 +1,43 @@
+import sys
+import json
+import os
+from unstructured.partition.auto import partition
+
+def process_document_with_unstructured(file_path: str):
+    """
+    Processes a document using the unstructured library to partition it
+    into structured elements.
+    """
+    raw_elements = partition(filename=file_path, strategy="auto")
+    
+    elements = []
+    for element in raw_elements:
+        element_dict = element.to_dict()
+        elements.append({
+            "type": element_dict.get("type", "unknown"),
+            "text": element_dict.get("text", ""),
+            "metadata": {
+                "source": element_dict.get("metadata", {}).get("filename"),
+                "page_number": element_dict.get("metadata", {}).get("page_number"),
+            }
+        })
+        
+    return elements
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "No file path provided."}), file=sys.stderr)
+        sys.exit(1)
+        
+    input_file = sys.argv[1]
+    
+    if not os.path.exists(input_file):
+        print(json.dumps({"error": f"File not found: {input_file}"}), file=sys.stderr)
+        sys.exit(1)
+        
+    try:
+        processed_data = process_document_with_unstructured(input_file)
+        print(json.dumps(processed_data, indent=2))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
