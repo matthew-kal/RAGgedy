@@ -1,8 +1,18 @@
 import { FastifyInstance } from 'fastify';
-import { vectorService, DocumentChunk } from '../services/vectorService';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { db } from '../db';
+import { jobService } from '../services/jobService';
+import { vectorService } from '../services/vectorService';
+import type { DocumentsTable } from '../db/schema';
+import type { Chunk } from 'shared-types';
+
+interface UploadDocumentRequest {
+  filePath: string;
+  description: string;
+  keywords: string[];
+}
 
 export async function documentRoutes(server: FastifyInstance) {
   // Initialize vector service on server start
@@ -10,67 +20,144 @@ export async function documentRoutes(server: FastifyInstance) {
     await vectorService.initialize();
   });
 
-  /**
-   * Upload and process a document for a project
-   */
-  server.post<{
+  // Copy a local file into project directory and create an ingestion job
+  server.post<{ 
     Params: { projectId: string };
-    Body: { filename: string; content: string };
-  }>('/projects/:projectId/documents', async (request, reply) => {
-    const { projectId } = request.params;
-    const { filename, content } = request.body;
+    Body: UploadDocumentRequest;
+  }>(
+    '/projects/:projectId/documents',
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const { filePath, description, keywords } = request.body;
 
-    if (!filename || !content) {
-      return reply.code(400).send({ 
-        error: 'Filename and content are required' 
+      // Validate input
+      if (!filePath || typeof filePath !== 'string') {
+        return reply.code(400).send({ error: 'filePath is required and must be a string' });
+      }
+
+      try {
+        // Validate that the file exists at the provided path
+        await fs.access(filePath);
+      } catch (error) {
+        return reply.code(400).send({ 
+          error: `File does not exist or is not accessible: ${filePath}` 
+        });
+      }
+
+      // Extract filename and extension from the file
+      const originalFileName = path.basename(filePath);
+      const fileExtension = path.extname(originalFileName).toLowerCase().replace('.', '');
+      
+      // Validate file type
+      const allowedTypes: DocumentsTable['fileType'][] = ['pdf', 'docx', 'png', 'csv', 'txt', 'md', 'html', 'jpeg'];
+      const fileType: DocumentsTable['fileType'] = allowedTypes.includes(fileExtension as any) 
+        ? fileExtension as DocumentsTable['fileType'] 
+        : 'txt';
+
+      // Insert document record using the provided file path
+      const documentId = randomUUID();
+      await db
+        .insertInto('documents')
+        .values({
+          id: documentId,
+          fileName: originalFileName,
+          filePath: filePath, // Store the frontend-provided file path
+          fileType: fileType,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          user_description: description || '',
+          keywords: JSON.stringify(keywords || []),
+        })
+        .execute();
+
+      // Link document to project
+      await db
+        .insertInto('project_documents')
+        .values({
+          projectId,
+          documentId,
+        })
+        .execute();
+
+      // Create ingestion job
+      const jobId = await jobService.createIngestionJob(documentId);
+
+      return reply.code(202).send({
+        message: 'Document registered and ingestion job queued.',
+        documentId,
+        jobId,
+        filePath: filePath,
       });
     }
+  );
 
-    try {
-      // Split document into chunks
-      const textChunks = vectorService.splitTextIntoChunks(content);
-      console.log('textChunks', textChunks);
-      
-      // Create document chunks with metadata
-      const documentChunks: DocumentChunk[] = textChunks.map((chunk: string, index: number) => ({
-        id: randomUUID(),
-        projectId,
-        content: chunk,
-        metadata: {
-          filename,
-          chunkIndex: index,
-          totalChunks: textChunks.length
+  /**
+   * STEP 5: New endpoint for Python worker to call upon completion.
+   */
+  server.post<{ Body: { jobId: string; status: 'success' | 'error'; data?: any; error?: string } }>(
+    '/jobs/callback',
+    async (request, reply) => {
+      const { jobId, status, data, error } = request.body;
+
+      const job = await db.selectFrom('jobs').selectAll().where('id', '=', jobId).executeTakeFirst();
+      if (!job) return reply.code(404).send({ error: 'Job not found' });
+
+      const document = await db.selectFrom('documents').selectAll().where('id', '=', job.relatedId).executeTakeFirst();
+      if (!document) return reply.code(404).send({ error: 'Associated document not found' });
+
+      if (status === 'error') {
+        await db.updateTable('jobs').set({ status: 'failed' }).where('id', '=', jobId).execute();
+        await db.updateTable('documents').set({ status: 'error' }).where('id', '=', document.id).execute();
+        server.log.error(`Job ${jobId} failed: ${error}`);
+        return reply.code(200).send({ message: 'Job failure acknowledged' });
+      }
+
+      try {
+        // Get the project IDs this document belongs to
+        const projectRelations = await db
+          .selectFrom('project_documents')
+          .select(['projectId'])
+          .where('documentId', '=', document.id)
+          .execute();
+
+        if (projectRelations.length === 0) {
+          throw new Error('Document not associated with any project');
         }
-      }));
 
-      console.log('documentChunks', documentChunks);
+        const projectIds = projectRelations.map(rel => rel.projectId);
 
-      // Add chunks to vector database
-      await vectorService.addDocument(projectId, documentChunks);
+        const chunksForDb: Chunk[] = (data?.chunks || []).map((chunk: any, index: number) => ({
+          id: randomUUID(),
+          projectId: projectIds,
+          documentId: document.id,
+          content: chunk.content,
+          metadata: {
+            source_file: document.fileName,
+            page_number: chunk.metadata?.page_number ?? 0,
+            chunk_index: index,
+            user_description: document.user_description || undefined,
+            keywords: document.keywords ? JSON.parse(document.keywords) : [],
+          }
+        }));
 
-      // Save original document to file system
-      const projectPath = path.resolve(process.cwd(), 'data', projectId);
-      const documentsPath = path.join(projectPath, 'documents');
-      await fs.mkdir(documentsPath, { recursive: true });
-      
-      const documentPath = path.join(documentsPath, `${filename}.txt`);
-      await fs.writeFile(documentPath, content, 'utf-8');
+        // Add to vector store for each project (for now, use the first project)
+        if (projectIds.length === 0) {
+          throw new Error('No project IDs found for document');
+        }
+        await vectorService.addDocuments(projectIds[0]!, chunksForDb);
 
-      return reply.code(201).send({
-        message: 'Document processed successfully',
-        filename,
-        chunksCreated: documentChunks.length,
-        documentId: randomUUID()
-      });
+        await db.updateTable('jobs').set({ status: 'done' }).where('id', '=', jobId).execute();
+        await db.updateTable('documents').set({ status: 'indexed' }).where('id', '=', document.id).execute();
 
-    } catch (error: any) {
-      server.log.error(error, 'Failed to process document');
-      return reply.code(500).send({ 
-        error: 'Failed to process document',
-        details: error.message 
-      });
+        return reply.code(200).send({ message: 'Processing complete' });
+      } catch (e: any) {
+        server.log.error(`Error finalizing job ${jobId}: ${e.message}`);
+        await db.updateTable('jobs').set({ status: 'failed' }).where('id', '=', jobId).execute();
+        await db.updateTable('documents').set({ status: 'error' }).where('id', '=', document.id).execute();
+        return reply.code(500).send({ error: 'Failed to finalize job' });
+      }
     }
-  });
+  );
 
   /**
    * Query documents using RAG (Retrieval Augmented Generation)
@@ -90,7 +177,7 @@ export async function documentRoutes(server: FastifyInstance) {
 
     try {
       // Search for relevant document chunks
-      const results = await vectorService.searchSimilar(projectId, query, topK);
+      const results = await vectorService.search(projectId, query, '', topK);
 
       if (results.length === 0) {
         return reply.send({
@@ -102,16 +189,16 @@ export async function documentRoutes(server: FastifyInstance) {
 
       // Extract relevant context from search results
       const context = results
-        .map(result => result.chunk.content)
+        .map((result: any) => result.chunk.content)
         .join('\n\n');
 
       // For now, return a simple response with context
       // TODO: Integrate with an LLM for better responses
       const response = {
         answer: `Based on your documents, here's what I found:\n\n${context}`,
-        sources: results.map(result => ({
-          filename: result.chunk.metadata.filename,
-          chunkIndex: result.chunk.metadata.chunkIndex,
+        sources: results.map((result: any) => ({
+          filename: result.chunk.source_file,
+          chunkIndex: result.chunk.chunk_index,
           score: result.score,
           preview: result.chunk.content.substring(0, 200) + '...'
         })),
@@ -139,37 +226,25 @@ export async function documentRoutes(server: FastifyInstance) {
     const { projectId } = request.params;
 
     try {
-      const projectPath = path.resolve(process.cwd(), 'data', projectId);
-      const documentsPath = path.join(projectPath, 'documents');
+      // Query documents that belong to this project using the join table
+      const documents = await db
+        .selectFrom('documents')
+        .innerJoin('project_documents', 'documents.id', 'project_documents.documentId')
+        .selectAll('documents')
+        .where('project_documents.projectId', '=', projectId)
+        .execute();
 
-      // Check if documents directory exists
-      try {
-        await fs.access(documentsPath);
-      } catch {
-        return reply.send({ documents: [] });
-      }
+      const formattedDocuments = documents.map(doc => ({
+        id: doc.id,
+        fileName: doc.fileName,
+        fileType: doc.fileType,
+        status: doc.status,
+        createdAt: doc.createdAt,
+        userDescription: doc.user_description,
+        keywords: doc.keywords ? JSON.parse(doc.keywords) : [],
+      }));
 
-      // Read all document files
-      const files = await fs.readdir(documentsPath);
-      const documents = [];
-
-      for (const file of files) {
-        if (path.extname(file) === '.txt') {
-          const filePath = path.join(documentsPath, file);
-          const stats = await fs.stat(filePath);
-          const content = await fs.readFile(filePath, 'utf-8');
-          
-          documents.push({
-            filename: path.basename(file, '.txt'),
-            size: stats.size,
-            uploadedAt: stats.mtime.toISOString(),
-            wordCount: content.split(/\s+/).length,
-            preview: content.substring(0, 200) + (content.length > 200 ? '...' : '')
-          });
-        }
-      }
-
-      return reply.send({ documents });
+      return reply.send({ documents: formattedDocuments });
 
     } catch (error: any) {
       server.log.error(error, 'Failed to get documents');
@@ -184,37 +259,133 @@ export async function documentRoutes(server: FastifyInstance) {
    * Delete a document from a project
    */
   server.delete<{
-    Params: { projectId: string; filename: string };
-  }>('/projects/:projectId/documents/:filename', async (request, reply) => {
-    const { projectId, filename } = request.params;
+    Params: { projectId: string; documentId: string };
+  }>('/projects/:projectId/documents/:documentId', async (request, reply) => {
+    const { projectId, documentId } = request.params;
 
     try {
-      const projectPath = path.resolve(process.cwd(), 'data', projectId);
-      const documentPath = path.join(projectPath, 'documents', `${filename}.txt`);
+      // Find the document and verify it belongs to this project
+      const document = await db
+        .selectFrom('documents')
+        .innerJoin('project_documents', 'documents.id', 'project_documents.documentId')
+        .selectAll('documents')
+        .where('documents.id', '=', documentId)
+        .where('project_documents.projectId', '=', projectId)
+        .executeTakeFirst();
 
-      // Delete the file
-      await fs.unlink(documentPath);
+      if (!document) {
+        return reply.code(404).send({ 
+          error: 'Document not found or does not belong to this project' 
+        });
+      }
 
-      // Note: Vector database cleanup would need to be implemented
-      // Vectra doesn't support easy deletion by metadata
-      console.log(`Document ${filename} deleted from project ${projectId}`);
-      console.log('Note: Vector index cleanup not implemented yet');
+      // Delete from vector database
+      await vectorService.deleteDocument(projectId, document.fileName);
+
+      // Delete the physical file
+      try {
+        await fs.unlink(document.filePath);
+      } catch (fileError) {
+        console.log(`Could not delete physical file: ${document.filePath}`, fileError);
+      }
+
+      // Delete from project_documents join table
+      await db
+        .deleteFrom('project_documents')
+        .where('documentId', '=', documentId)
+        .where('projectId', '=', projectId)
+        .execute();
+
+      // Check if document is associated with other projects
+      const remainingProjects = await db
+        .selectFrom('project_documents')
+        .select(['projectId'])
+        .where('documentId', '=', documentId)
+        .execute();
+
+      // If no other projects reference this document, delete the document itself
+      if (remainingProjects.length === 0) {
+        await db
+          .deleteFrom('documents')
+          .where('id', '=', documentId)
+          .execute();
+
+        // Also clean up any related jobs
+        await db
+          .deleteFrom('jobs')
+          .where('relatedId', '=', documentId)
+          .execute();
+      }
 
       return reply.send({ 
         message: 'Document deleted successfully',
-        filename 
+        documentId 
       });
 
     } catch (error: any) {
-      if (error.code === 'ENOENT') {
+      server.log.error(error, 'Failed to delete document');
+      return reply.code(500).send({ 
+        error: 'Failed to delete document',
+        details: error.message 
+      });
+    }
+  });
+
+  /**
+   * Add an existing document to another project
+   */
+  server.post<{
+    Params: { projectId: string; documentId: string };
+  }>('/projects/:projectId/documents/:documentId/link', async (request, reply) => {
+    const { projectId, documentId } = request.params;
+
+    try {
+      // Check if document exists
+      const document = await db
+        .selectFrom('documents')
+        .select(['id'])
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+
+      if (!document) {
         return reply.code(404).send({ 
           error: 'Document not found' 
         });
       }
 
-      server.log.error(error, 'Failed to delete document');
+      // Check if relationship already exists
+      const existingLink = await db
+        .selectFrom('project_documents')
+        .select(['projectId'])
+        .where('projectId', '=', projectId)
+        .where('documentId', '=', documentId)
+        .executeTakeFirst();
+
+      if (existingLink) {
+        return reply.code(409).send({ 
+          error: 'Document is already linked to this project' 
+        });
+      }
+
+      // Create the link
+      await db
+        .insertInto('project_documents')
+        .values({
+          projectId,
+          documentId,
+        })
+        .execute();
+
+      return reply.send({ 
+        message: 'Document linked to project successfully',
+        projectId,
+        documentId
+      });
+
+    } catch (error: any) {
+      server.log.error(error, 'Failed to link document to project');
       return reply.code(500).send({ 
-        error: 'Failed to delete document',
+        error: 'Failed to link document to project',
         details: error.message 
       });
     }

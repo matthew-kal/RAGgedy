@@ -1,66 +1,29 @@
 import { defineConfig } from 'vite'
+import path from 'node:path'
+import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
-import electron from 'vite-plugin-electron'
 
-// https://vite.dev/config/
+// https://vitejs.dev/config/
 export default defineConfig({
-  define: {
-    global: 'globalThis',
-  },
   plugins: [
     react(),
-    electron([
-      {
-        entry: 'src/main.ts',
-        onstart(options) {
-          options.startup()
-        },
-        vite: {
-          build: {
-            sourcemap: true,
-            minify: false,
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: ['electron']
-            }
-          },
-          plugins: [{
-            name: 'vite-plugin-electron-renderer-url',
-            config(config) {
-              const server = config.server
-              if (server) {
-                process.env.VITE_DEV_SERVER_URL = `http://localhost:${server.port}`
-              }
-            }
-          }]
-        }
+    electron({
+      main: {
+        // Shortcut of `build.lib.entry`.
+        entry: 'electron/main.ts',
       },
-      {
-        entry: 'src/preload.ts',
-        onstart(options) {
-          options.reload()
-        },
-        vite: {
-          build: {
-            lib: {
-              entry: 'src/preload.ts',
-              formats: ['cjs'],
-              fileName: () => 'preload.cjs'
-            },
-            sourcemap: true,
-            minify: false,
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: ['electron']
-            }
-          }
-        }
-      }
-    ])
+      preload: {
+        // Shortcut of `build.rollupOptions.input`.
+        // Preload scripts may contain Web assets, so use the `build.rollupOptions.input` instead `build.lib.entry`.
+        input: path.join(__dirname, 'electron/preload.ts'),
+      },
+      // Ployfill the Electron and Node.js API for Renderer process.
+      // If you want use Node.js in Renderer process, the `nodeIntegration` needs to be enabled in the Main process.
+      // See 👉 https://github.com/electron-vite/vite-plugin-electron-renderer
+      renderer: process.env.NODE_ENV === 'test'
+        // https://github.com/electron-vite/vite-plugin-electron-renderer/issues/78#issuecomment-2053600808
+        ? undefined
+        : {},
+    }),
   ],
-  build: {
-    rollupOptions: {
-      external: ['electron', 'crypto']
-    }
-  }
 })

@@ -19,12 +19,20 @@ export async function setupDatabase() {
     await schema.createTable('documents')
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
-        .addColumn('projectId', 'text', (col) => col.notNull())
         .addColumn('fileName', 'text', (col) => col.notNull())
         .addColumn('filePath', 'text', (col) => col.notNull())
         .addColumn('fileType', 'text', (col) => col.notNull())
         .addColumn('status', 'text', (col) => col.notNull())
         .addColumn('createdAt', 'text', (col) => col.notNull())
+        .addColumn('user_description', 'text')
+        .addColumn('keywords', 'text') // Storing array as a JSON string
+        .execute();
+
+    await schema.createTable('project_documents')
+        .ifNotExists()
+        .addColumn('projectId', 'text', (col) => col.notNull())
+        .addColumn('documentId', 'text', (col) => col.notNull())
+        .addPrimaryKeyConstraint('project_documents_pk', ['projectId', 'documentId'])
         .execute();
 
     await schema.createTable('chunks')

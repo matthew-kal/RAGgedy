@@ -1,41 +1,36 @@
-import { LocalIndex } from 'vectra';
-import { pipeline } from '@xenova/transformers';
+import { connect, Connection, Table } from '@lancedb/lancedb';
+import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
 import path from 'path';
-import { promises as fs } from 'fs';
+import type { Chunk } from 'shared-types';
 
-export interface DocumentChunk {
-  id: string;
-  projectId: string;
-  content: string;
-  metadata: {
-    filename: string;
-    chunkIndex: number;
-    totalChunks: number;
-  };
-}
+
 
 export interface SearchResult {
-  chunk: DocumentChunk;
+  chunk: Chunk['metadata'] & { content: string };
   score: number;
 }
 
 class VectorService {
-  private indexes: Map<string, LocalIndex> = new Map();
-  private embedder: any = null;
+  private dbConnection: Connection | null = null;
+  private tables: Map<string, Table> = new Map();
+  private embedder: FeatureExtractionPipeline | null = null;
   private isInitialized = false;
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
 
     try {
+      console.log('Initializing embedding model and DB connection...');
       // Initialize the embedding model
-      console.log('Initializing embedding model...');
       this.embedder = await pipeline(
         'feature-extraction',
-        'Xenova/all-MiniLM-L6-v2', // Lightweight, fast embedding model
-        { revision: 'main' }
+        'Xenova/all-MiniLM-L6-v2'
       );
-      
+
+      // Connect to the LanceDB database directory
+      const dbPath = path.resolve(process.cwd(), 'data', 'lancedb');
+      this.dbConnection = await connect(dbPath);
+
       this.isInitialized = true;
       console.log('Vector service initialized successfully');
     } catch (error) {
@@ -44,122 +39,107 @@ class VectorService {
     }
   }
 
-  async getOrCreateIndex(projectId: string): Promise<LocalIndex> {
-    if (this.indexes.has(projectId)) {
-      return this.indexes.get(projectId)!;
+  // A project's "index" is now a "table" in LanceDB
+  async getOrCreateTable(projectId: string): Promise<Table> {
+    if (this.tables.has(projectId)) {
+      return this.tables.get(projectId)!;
     }
+    if (!this.dbConnection) throw new Error('Database connection not initialized.');
 
-    const indexPath = path.resolve(process.cwd(), 'data', projectId, 'vector-index');
-    
-    // Ensure directory exists
-    await fs.mkdir(indexPath, { recursive: true });
+    const tableName = `project_${projectId.replace(/-/g, '_')}`;
+    const tableNames = await this.dbConnection.tableNames();
 
-    const index = new LocalIndex(indexPath);
-
-    // Check if index exists, if not create it
-    if (!(await index.isIndexCreated())) {
-      await index.createIndex();
-      console.log(`Created new vector index for project: ${projectId}`);
+    if (tableNames.includes(tableName)) {
+      console.log(`Opening existing table: ${tableName}`);
+      const table = await this.dbConnection.openTable(tableName);
+      this.tables.set(projectId, table);
+      return table;
     } else {
-      console.log(`Loaded existing vector index for project: ${projectId}`);
+      console.log(`Creating new table: ${tableName}`);
+      // The first item added to a table defines its schema.
+      // We pass a dummy object to create the table with the right structure.
+      const table = await this.dbConnection.createTable(tableName, [
+        { vector: Array(384).fill(0), content: 'dummy', source_file: '', page_number: 0, chunk_index: 0, id: '' }
+      ]);
+      this.tables.set(projectId, table);
+      return table;
     }
-
-    this.indexes.set(projectId, index);
-    return index;
   }
 
-  async addDocument(projectId: string, chunks: DocumentChunk[]): Promise<void> {
-    if (!this.isInitialized) {
-      await this.initialize();
-    }
+  async addDocuments(projectId: string, chunks: Chunk[]): Promise<void> {
+    if (!this.isInitialized) await this.initialize();
 
-    const index = await this.getOrCreateIndex(projectId);
+    const table = await this.getOrCreateTable(projectId);
+    if (chunks.length === 0) return;
 
+    const data = [];
     for (const chunk of chunks) {
-      try {
-        // Generate embedding for the chunk content
-        const embedding = await this.generateEmbedding(chunk.content);
-        
-        // Add the chunk to the vector index
-        await index.insertItem({
-          vector: embedding,
-          metadata: {
-            id: chunk.id,
-            projectId: chunk.projectId,
-            content: chunk.content,
-            filename: chunk.metadata.filename,
-            chunkIndex: chunk.metadata.chunkIndex,
-            totalChunks: chunk.metadata.totalChunks
-          }
-        });
-
-        console.log(`Added chunk ${chunk.id} to vector index`);
-      } catch (error) {
-        console.error(`Failed to add chunk ${chunk.id}:`, error);
-        throw error;
-      }
+      const embedding = await this.generateEmbedding(chunk.content);
+      data.push({
+        vector: embedding,
+        id: chunk.id,
+        content: chunk.content,
+        source_file: chunk.metadata.source_file,
+        page_number: chunk.metadata.page_number,
+        chunk_index: chunk.metadata.chunk_index,
+        user_description: chunk.metadata.user_description,
+        keywords: chunk.metadata.keywords
+      });
     }
+
+    await table.add(data);
+    console.log(`Added ${data.length} chunks to table for project: ${projectId}`);
   }
 
-  async searchSimilar(
-    projectId: string, 
-    query: string, 
+  async search(
+    projectId: string,
+    query: string,
+    filter: string = '', // SQL-like WHERE clause, e.g., "page_number > 15 AND keywords LIKE '%finance%'"
     topK: number = 5
   ): Promise<SearchResult[]> {
-    if (!this.isInitialized) {
-      await this.initialize();
+    if (!this.isInitialized) await this.initialize();
+
+    const table = await this.getOrCreateTable(projectId);
+    const queryEmbedding = await this.generateEmbedding(query);
+
+    let queryBuilder = table.search(queryEmbedding, 'vector').limit(topK);
+
+    if (filter) {
+      queryBuilder = queryBuilder.where(filter);
     }
 
-    const index = await this.getOrCreateIndex(projectId);
-    
-    try {
-      // Generate embedding for the query
-      const queryEmbedding = await this.generateEmbedding(query);
-      
-      // Search for similar vectors
-      const results = await index.queryItems(queryEmbedding, '', topK);
-      
-      return results.map(result => ({
-        chunk: {
-          id: String(result.item.metadata.id),
-          projectId: String(result.item.metadata.projectId),
-          content: String(result.item.metadata.content),
-          metadata: {
-            filename: String(result.item.metadata.filename),
-            chunkIndex: Number(result.item.metadata.chunkIndex),
-            totalChunks: Number(result.item.metadata.totalChunks)
-          }
-        },
-        score: result.score
-      }));
-    } catch (error) {
-      console.error('Search failed:', error);
-      throw error;
-    }
+    const results = await queryBuilder.toArray();
+
+    return results.map(result => ({
+      // Note: lancedb returns all metadata fields at the top level
+      chunk: {
+        content: result.content as string,
+        source_file: result.source_file as string,
+        page_number: result.page_number as number,
+        chunk_index: result.chunk_index as number,
+        user_description: result.user_description as string | undefined,
+        keywords: result.keywords as string[] | undefined,
+      },
+      score: result._distance || 0 // LanceDB uses _distance for similarity scores
+    }));
   }
 
-  async deleteDocument(projectId: string, documentId: string): Promise<void> {
-    const index = await this.getOrCreateIndex(projectId);
+  async deleteDocument(projectId: string, sourceFile: string): Promise<void> {
+    if (!this.isInitialized) await this.initialize();
     
-    try {
-      // Note: Vectra doesn't have built-in metadata filtering for deletion
-      // This is a limitation - you might need to rebuild the index
-      // or keep track of item IDs separately for deletion
-      console.log(`Document deletion requested for ${documentId} in project ${projectId}`);
-      console.log('Note: Vectra requires index rebuild for document deletion');
-    } catch (error) {
-      console.error('Delete failed:', error);
-      throw error;
-    }
+    const table = await this.getOrCreateTable(projectId);
+    // LanceDB can delete based on a metadata filter, solving the old problem.
+    await table.delete(`source_file = '${sourceFile}'`);
+    console.log(`Deleted all chunks for document '${sourceFile}' in project ${projectId}`);
   }
 
   private async generateEmbedding(text: string): Promise<number[]> {
+    if (!this.embedder) throw new Error("Embedder not initialized.");
     try {
       const output = await this.embedder(text, {
         pooling: 'mean',
         normalize: true
       });
-      
       return Array.from(output.data);
     } catch (error) {
       console.error('Embedding generation failed:', error);
@@ -167,39 +147,31 @@ class VectorService {
     }
   }
 
-  // Utility function to split text into chunks
+  // Utility function for chunking - can be moved to a separate service later
   splitTextIntoChunks(
-    text: string, 
-    chunkSize: number = 500, 
+    text: string,
+    chunkSize: number = 500,
     overlap: number = 50
   ): string[] {
     const chunks: string[] = [];
     const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
     
     let currentChunk = '';
-    
     for (const sentence of sentences) {
       const trimmedSentence = sentence.trim();
-      
-      if (currentChunk.length + trimmedSentence.length > chunkSize && currentChunk.length > 0) {
-        chunks.push(currentChunk.trim());
-        
-        // Add overlap by starting new chunk with end of previous chunk
-        const words = currentChunk.split(' ');
-        const overlapWords = words.slice(-Math.floor(overlap / 10)).join(' ');
-        currentChunk = overlapWords + ' ' + trimmedSentence;
+      if ((currentChunk.length + trimmedSentence.length + 1) > chunkSize && currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        const overlapWords = currentChunk.split(' ').slice(-Math.floor(overlap / 5)).join(' ');
+        currentChunk = overlapWords + '. ' + trimmedSentence;
       } else {
-        currentChunk += (currentChunk ? '. ' : '') + trimmedSentence;
+        currentChunk += (currentChunk.length > 0 ? '. ' : '') + trimmedSentence;
       }
     }
-    
-    if (currentChunk.trim()) {
-      chunks.push(currentChunk.trim());
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
     }
-    
-    return chunks.filter(chunk => chunk.length > 10); // Filter out very short chunks
+    return chunks;
   }
 }
 
-// Export singleton instance
 export const vectorService = new VectorService();

@@ -1,4 +1,6 @@
 import fastify from 'fastify';
+import multipart from '@fastify/multipart';
+
 import cors from '@fastify/cors'; // Import the cors package
 import { setupDatabase } from './db/migrations';
 import { projectRoutes } from './routes/projects';

@@ -14,7 +14,16 @@
     "install:all": "npm install",
     "clean": "npm run clean --workspaces --if-present && rm -rf node_modules"
   },
-  "keywords": ["rag", "desktop", "server", "typescript"],
+  "keywords": [
+    "rag",
+    "desktop",
+    "server",
+    "typescript"
+  ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.2.0",
+    "wait-on": "^8.0.4"
+  }
 }

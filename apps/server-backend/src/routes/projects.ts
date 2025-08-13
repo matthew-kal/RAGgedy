@@ -31,6 +31,7 @@ export async function projectRoutes(server: FastifyInstance) {
             createdAt: projectFromClient.createdAt,
             lastAccessed: projectFromClient.lastAccessed,
             documentCount: projectFromClient.documentCount || 0,
+            documentIds: [],
         };
 
         try {
