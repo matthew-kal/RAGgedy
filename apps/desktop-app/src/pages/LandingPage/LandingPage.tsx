@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Plus, Search, FileText, Sparkles } from 'lucide-react'
 import './LandingPage.css'
 import type { Project } from 'shared-types'
+import { apiFetch } from '../../lib/api'
 
 
 export const SkeletonCard: React.FC = () => {
@@ -115,8 +116,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onProjectSelect }) => {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const response = await fetch('http://localhost:3001/projects')
-        const data = await response.json()
+        const data = await apiFetch('projects')
         console.log('Projects fetched from backend:', data)
         setProjects(data)
       } catch (error) {
@@ -149,16 +149,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onProjectSelect }) => {
     console.log(newProject)
 
     try {
-      const response = await fetch('http://localhost:3001/projects', {
+      // Use the project data returned from backend (which includes the generated ID)
+      const createdProject: Project = await apiFetch('projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newProject),
       })
-
-      if (!response.ok) throw new Error('Failed to create project')
-
-      // Use the project data returned from backend (which includes the generated ID)
-      const createdProject: Project = await response.json()
       setProjects(prevProjects => [createdProject, ...prevProjects])
       
       // Reset form and close modal

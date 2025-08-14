@@ -14,7 +14,7 @@ export interface DocumentsTable {
     fileName: string;
     filePath: string;
     fileType: 'pdf' | 'docx' | 'csv' | 'txt' | 'md' | 'html' | 'png' | 'jpeg';
-    status: 'pending' | 'processing' | 'indexed' | 'error';
+    status: 'queued' | 'parsing' | 'chunking' | 'embedding' | 'indexed' | 'error';
     createdAt: ColumnType<Date, string, string>;
     user_description: string | null;
     keywords: string | null;
@@ -23,14 +23,6 @@ export interface DocumentsTable {
 export interface ProjectDocumentsTable {
     projectId: string; 
     documentId: string; 
-}
-
-export interface ChunksTable {
-    id:string;
-    documentId: string;
-    content: string;
-    vectorId: string | null;
-    metadata: ColumnType<Record<string, any>, string, string>;
 }
 
 export interface JobsTable {
@@ -46,6 +38,5 @@ export interface Database {
     projects: ProjectsTable;
     documents: DocumentsTable;
     project_documents: ProjectDocumentsTable; 
-    chunks: ChunksTable;
     jobs: JobsTable;
 }

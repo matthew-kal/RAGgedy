@@ -1,12 +1,21 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import LandingPage from './pages/LandingPage/LandingPage'
 import ChatPage from './pages/ChatPage/ChatPage'
 import type { Project } from 'shared-types'
+import { initializeApi } from './lib/api'
 import './App.css'
 
 function App() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
+
+  useEffect(() => {
+    if ((window as any).electronAPI) {
+      (window as any).electronAPI.onSetServerPort((port: number) => {
+        initializeApi(port);
+      });
+    }
+  }, []);
 
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project)

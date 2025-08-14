@@ -31,7 +31,6 @@ export async function projectRoutes(server: FastifyInstance) {
             createdAt: projectFromClient.createdAt,
             lastAccessed: projectFromClient.lastAccessed,
             documentCount: projectFromClient.documentCount || 0,
-            documentIds: [],
         };
 
         try {
@@ -42,8 +41,7 @@ export async function projectRoutes(server: FastifyInstance) {
                 .values(projectForDb)
                 .returningAll()
                 .executeTakeFirstOrThrow();
-            
-            // 4. Return the complete project object with the correct ID
+         
             return reply.code(201).send(newProject);
 
         } catch (error: any) {

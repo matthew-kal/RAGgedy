@@ -4,8 +4,8 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'os'
+import { fork, ChildProcess } from 'child_process'
 
-const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The built directory structure
@@ -27,10 +27,27 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+let serverProcess: ChildProcess
+let serverPort: number | null = null
+
+function startServer(): ChildProcess {
+  const serverPath = path.resolve(__dirname, '../../server-backend/dist/server.js'); // Adjust if your output dir is different
+  const dataPath = app.getPath('userData');
+
+  const child = fork(serverPath, [], {
+    env: { ...process.env, APP_DATA_PATH: dataPath },
+    stdio: 'pipe',
+  });
+
+  child.stdout?.on('data', (data) => console.log(`[Server Backend]: ${data.toString().trim()}`));
+  child.stderr?.on('data', (data) => console.error(`[Server Backend ERROR]: ${data.toString().trim()}`));
+
+  return child;
+}
 
 function createWindow() {
   win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    icon: path.join(process.env.VITE_PUBLIC || RENDERER_DIST, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
@@ -38,6 +55,7 @@ function createWindow() {
 
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
+    win?.webContents.send('set-server-port', serverPort); // Pass the dynamic port
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
   })
 
@@ -59,6 +77,12 @@ app.on('window-all-closed', () => {
   }
 })
 
+app.on('will-quit', () => {
+  if (serverProcess) {
+    serverProcess.kill();
+  }
+})
+
 app.on('activate', () => {
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
@@ -68,7 +92,18 @@ app.on('activate', () => {
 })
 
 app.whenReady().then(() => {
-  createWindow()
+  serverProcess = startServer();
+
+  serverProcess.on('message', (message: { type: string; port?: number }) => {
+    if (message.type === 'serverReady' && message.port) {
+      console.log(`✅ Server is ready on port ${message.port}`);
+      serverPort = message.port;
+
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    }
+  });
 
   // Register IPC handlers
   ipcMain.handle('dialog:openFile', async (event, options) => {

@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowLeft, Send, Plus, Upload } from 'lucide-react'
 import './ChatPage.css'
-import type { Project } from 'shared-types'
+import type { Project } from '../../../../../packages/shared-types/src/project.types'
+import type { Document } from '../../../../../packages/shared-types/src/document.types'
+import { apiFetch } from '../../lib/api'
 
 interface ChatPageProps {
   project: Project
@@ -20,8 +22,95 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
   const [messages, setMessages] = useState<Message[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [documents, setDocuments] = useState<Document[]>([]);
 
   const [isUploading, setIsUploading] = useState(false)
+  const [showMetadataForm, setShowMetadataForm] = useState(false)
+  const [selectedFilePath, setSelectedFilePath] = useState('')
+  const [description, setDescription] = useState('')
+  const [keywords, setKeywords] = useState<string[]>(['', ''])
+  const [currentKeyword, setCurrentKeyword] = useState('')
+
+  useEffect(() => {
+    const fetchDocuments = async () => {
+      try {
+        const data = await apiFetch(`projects/${project.id}/documents`);
+        setDocuments(data.documents);
+      } catch (error) {
+        console.error("Failed to fetch documents:", error);
+      }
+    };
+    fetchDocuments();
+  }, [project.id]);
+
+  useEffect(() => {
+    console.log(`[WebSocket] Attempting to connect to project: ${project.id}`);
+    const ws = new WebSocket(`ws://localhost:3001/ws/project/${project.id}`);
+  
+    ws.onopen = () => {
+      console.log(`[WebSocket] Connection established for project ${project.id}`);
+    };
+  
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        console.log('[WebSocket] Received message:', message);
+  
+        if (message.eventType && message.documentId) {
+          setDocuments(currentDocs =>
+            currentDocs.map(doc =>
+              doc.id === message.documentId
+                ? { ...doc, status: message.status }
+                : doc
+            )
+          );
+        }
+      } catch (error) {
+        console.error('[WebSocket] Error parsing message:', error);
+      }
+    };
+  
+    ws.onerror = (error) => {
+      console.error('[WebSocket] Error:', error);
+    };
+  
+    ws.onclose = () => {
+      console.log('[WebSocket] Connection closed.');
+    };
+  
+    // Cleanup function: close the connection when the component unmounts
+    return () => {
+      ws.close();
+    };
+  }, [project.id]);
+
+  // Helper functions for managing keywords
+  const addKeyword = () => {
+    if (currentKeyword.trim() && keywords.length < 10 && !keywords.includes(currentKeyword.trim())) {
+      setKeywords([...keywords, currentKeyword.trim()])
+      setCurrentKeyword('')
+    }
+  }
+
+  const removeKeyword = (index: number) => {
+    const newKeywords = keywords.filter((_, i) => i !== index)
+    setKeywords(newKeywords)
+  }
+
+  const updateKeyword = (index: number, value: string) => {
+    const newKeywords = [...keywords]
+    newKeywords[index] = value
+    setKeywords(newKeywords)
+  }
+
+  const getValidKeywords = () => {
+    return keywords.filter(keyword => keyword.trim() !== '')
+  }
+
+  const isMetadataValid = () => {
+    const validKeywords = getValidKeywords()
+    return description.trim() !== '' && validKeywords.length >= 2
+  }
 
   // Initialize with a welcome message
   useEffect(() => {
@@ -50,7 +139,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
 
     // Query the RAG system
     try {
-      const response = await fetch(`http://localhost:3001/projects/${project.id}/query`, {
+      const ragResponse = await apiFetch(`projects/${project.id}/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -60,12 +149,6 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
           topK: 5
         }),
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to query documents')
-      }
-
-      const ragResponse = await response.json()
       
       const aiMessage: Message = {
         id: `ai-${Date.now()}`,
@@ -97,31 +180,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
   }
 
   const handleUploadFile = async () => {
-    console.log('handleUploadFile called')
-    console.log('window object keys:', Object.keys(window))
-    console.log('window.electronAPI:', (window as any).electronAPI)
-    
-    // Test if we can access the API
-    try {
-      if ((window as any).electronAPI && (window as any).electronAPI.getHomeDirectory) {
-        console.log('Testing getHomeDirectory...')
-        const homeDir = await (window as any).electronAPI.getHomeDirectory()
-        console.log('Home directory:', homeDir)
-      }
-    } catch (error) {
-      console.error('Error testing electronAPI:', error)
-    }
-    
     if (!(window as any).electronAPI) {
       console.error('electronAPI not found on window object')
       alert('File upload is only available in the desktop app. Please make sure you are running the Electron version.')
       return
     }
 
-    setIsUploading(true)
-
     try {
-      // Open file dialog
+      // Open file dialog first
       const result = await (window as any).electronAPI.openFileDialog({
         title: 'Select document to upload',
         filters: [
@@ -135,11 +201,33 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
       })
 
       if (result.canceled || result.filePaths.length === 0) {
-        setIsUploading(false)
         return
       }
 
-      const selectedFilePath = result.filePaths[0]
+      // Store the selected file path and show metadata form
+      setSelectedFilePath(result.filePaths[0])
+      setShowMetadataForm(true)
+      // Reset form state
+      setDescription('')
+      setKeywords(['', ''])
+      setCurrentKeyword('')
+    } catch (error: any) {
+      console.error('Error opening file dialog:', error)
+      alert(`Failed to open file dialog: ${error.message}`)
+    }
+  }
+
+  const handleSubmitMetadata = async () => {
+    if (!isMetadataValid()) {
+      alert('Please provide a description and at least 2 keywords.')
+      return
+    }
+
+    setIsUploading(true)
+    setShowMetadataForm(false)
+
+    try {
+      const originalFileName = selectedFilePath.split('/').pop() || 'unknown'
       
       // Get home directory
       const homeDir = await (window as any).electronAPI.getHomeDirectory()
@@ -161,7 +249,6 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
       }
 
       // Generate destination filename
-      const originalFileName = selectedFilePath.split('/').pop() || 'unknown'
       const timestamp = Date.now()
       const destinationFileName = `${timestamp}-${originalFileName}`
       const destinationPath = `${projectDir}/${destinationFileName}`
@@ -175,25 +262,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
         throw new Error(`Failed to copy file: ${copyResult.error}`)
       }
 
-      // Send to backend for processing
-      const response = await fetch(`http://localhost:3001/projects/${project.id}/documents`, {
+      // Send to backend for processing with metadata
+      const validKeywords = getValidKeywords()
+      await apiFetch(`projects/${project.id}/documents`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           filePath: destinationPath,
-          description: '', // Could add a description input later
-          keywords: []
+          fileName: originalFileName,
+          description: description.trim(),
+          keywords: validKeywords
         }),
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to upload document')
-      }
-
-      await response.json()
       
       // Add success message to chat
       const successMessage: Message = {
@@ -273,6 +355,19 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
         </div>
       </header>
 
+      {/* Document Status Section */}
+      <div className="document-status-container">
+        <h3>Document Status</h3>
+        <div className="documents-list">
+          {documents.map(doc => (
+            <div key={doc.id} className="document-item">
+              <span className="document-name">{doc.fileName}</span>
+              <span className={`document-status-badge status-${doc.status}`}>{doc.status}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Chat Messages */}
       <main className="chat-main">
         <div className="messages-container">
@@ -310,6 +405,100 @@ const ChatPage: React.FC<ChatPageProps> = ({ project, onBack }) => {
           )}
         </div>
       </main>
+
+      {/* Metadata Form Modal */}
+      {showMetadataForm && (
+        <div className="metadata-modal-overlay">
+          <motion.div
+            className="metadata-modal"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+          >
+            <h3>Document Information</h3>
+            <p className="file-name">File: {selectedFilePath.split('/').pop()}</p>
+            
+            <div className="form-group">
+              <label htmlFor="description">Description *</label>
+              <textarea
+                id="description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Briefly describe what this document contains..."
+                rows={3}
+                className="form-input"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Keywords * (minimum 2, maximum 10)</label>
+              <div className="keywords-container">
+                {keywords.map((keyword, index) => (
+                  <div key={index} className="keyword-input-group">
+                    <input
+                      type="text"
+                      value={keyword}
+                      onChange={(e) => updateKeyword(index, e.target.value)}
+                      placeholder={`Keyword ${index + 1}`}
+                      className="form-input keyword-input"
+                    />
+                    {keywords.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => removeKeyword(index)}
+                        className="remove-keyword-btn"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                ))}
+                
+                {keywords.length < 10 && (
+                  <div className="add-keyword-group">
+                    <input
+                      type="text"
+                      value={currentKeyword}
+                      onChange={(e) => setCurrentKeyword(e.target.value)}
+                      placeholder="Add new keyword"
+                      className="form-input keyword-input"
+                      onKeyPress={(e) => e.key === 'Enter' && addKeyword()}
+                    />
+                    <button
+                      type="button"
+                      onClick={addKeyword}
+                      disabled={!currentKeyword.trim() || keywords.includes(currentKeyword.trim())}
+                      className="add-keyword-btn"
+                    >
+                      Add
+                    </button>
+                  </div>
+                )}
+              </div>
+              <p className="keyword-count">
+                Valid keywords: {getValidKeywords().length}/10 (minimum 2 required)
+              </p>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                onClick={() => setShowMetadataForm(false)}
+                className="cancel-btn"
+                disabled={isUploading}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitMetadata}
+                disabled={!isMetadataValid() || isUploading}
+                className="submit-btn"
+              >
+                {isUploading ? 'Uploading...' : 'Upload Document'}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Input Area */}
       <footer className="chat-footer">

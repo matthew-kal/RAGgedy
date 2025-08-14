@@ -68,9 +68,60 @@
     cursor: pointer;
     transition: all 0.2s ease;
   }
-  
-  /* Main Chat Area */
-  .chat-main {
+
+/* Document Status Section */
+.document-status-container {
+  padding: 1rem 2rem;
+  border-bottom: var(--border-width) solid var(--primary-color);
+  background-color: var(--secondary-color);
+}
+
+.document-status-container h3 {
+  margin: 0 0 1rem 0;
+  color: var(--tertiary-color);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.documents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.document-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: var(--border-radius);
+  font-size: 0.9rem;
+}
+
+.document-name {
+  color: var(--tertiary-color);
+}
+
+.document-status-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.status-queued { background-color: #f0ad4e; color: white; }
+.status-parsing { background-color: #5bc0de; color: white; }
+.status-chunking { background-color: #5bc0de; color: white; }
+.status-embedding { background-color: #5bc0de; color: white; }
+.status-indexed { background-color: #5cb85c; color: white; }
+.status-error { background-color: #d9534f; color: white; }
+
+/* Main Chat Area */
+.chat-main {
     flex: 1;
     overflow: hidden;
     display: flex;
@@ -226,6 +277,184 @@
   }
   
   .send-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Metadata Modal Styles */
+  .metadata-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .metadata-modal {
+    background-color: var(--secondary-color);
+    border-radius: 12px;
+    padding: 2rem;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    border: var(--border-width) solid var(--primary-color);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  }
+
+  .metadata-modal h3 {
+    margin: 0 0 1rem 0;
+    color: var(--tertiary-color);
+    font-size: 1.2rem;
+  }
+
+  .file-name {
+    color: var(--accent-color);
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+    font-style: italic;
+  }
+
+  .form-group {
+    margin-bottom: 1.5rem;
+  }
+
+  .form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--tertiary-color);
+    font-weight: 500;
+  }
+
+  .form-input {
+    width: 100%;
+    padding: 0.75rem;
+    border: var(--border-width) solid var(--primary-color);
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--tertiary-color);
+    font-size: 0.9rem;
+    resize: vertical;
+  }
+
+  .form-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
+  }
+
+  .keywords-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .keyword-input-group {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .keyword-input {
+    flex: 1;
+    margin-bottom: 0;
+  }
+
+  .remove-keyword-btn {
+    background-color: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+  }
+
+  .remove-keyword-btn:hover {
+    background-color: #c0392b;
+  }
+
+  .add-keyword-group {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .add-keyword-btn {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+  }
+
+  .add-keyword-btn:hover:not(:disabled) {
+    background-color: rgba(255, 107, 53, 0.8);
+  }
+
+  .add-keyword-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .keyword-count {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--primary-color);
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+    margin-top: 2rem;
+  }
+
+  .cancel-btn {
+    background-color: transparent;
+    color: var(--primary-color);
+    border: var(--border-width) solid var(--primary-color);
+    border-radius: 6px;
+    padding: 0.75rem 1.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }
+
+  .cancel-btn:hover:not(:disabled) {
+    background-color: var(--primary-color);
+    color: var(--secondary-color);
+  }
+
+  .submit-btn {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 0.75rem 1.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+  }
+
+  .submit-btn:hover:not(:disabled) {
+    background-color: rgba(255, 107, 53, 0.8);
+  }
+
+  .submit-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

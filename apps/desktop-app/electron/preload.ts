@@ -34,4 +34,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyFile: (sourcePath: string, destinationPath: string) => ipcRenderer.invoke('fs:copyFile', sourcePath, destinationPath),
   pathExists: (path: string) => ipcRenderer.invoke('fs:pathExists', path),
   getHomeDirectory: () => ipcRenderer.invoke('fs:getHomeDirectory'),
+  
+  // Server port listener
+  onSetServerPort: (callback: (port: number) => void) => {
+    ipcRenderer.on('set-server-port', (event, port) => callback(port));
+  },
 })

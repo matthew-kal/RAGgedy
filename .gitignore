@@ -23,5 +23,5 @@ local-rag-app.db
 # IDEs
 .vscode/
 .idea/
-
+LLM/
 venv/

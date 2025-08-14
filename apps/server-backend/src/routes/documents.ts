@@ -26,69 +26,47 @@ export async function documentRoutes(server: FastifyInstance) {
     Body: UploadDocumentRequest;
   }>(
     '/projects/:projectId/documents',
-    async (request, reply) => {
-      const { projectId } = request.params;
-      const { filePath, description, keywords } = request.body;
+    // This is the new function body for the POST route
+async (request, reply) => {
+  const { projectId } = request.params;
+  const { filePath, fileName, description, keywords } = request.body as any; // Cast as any to match new body
 
-      // Validate input
-      if (!filePath || typeof filePath !== 'string') {
-        return reply.code(400).send({ error: 'filePath is required and must be a string' });
-      }
+  if (!filePath || !fileName) {
+    return reply.code(400).send({ error: 'filePath and fileName are required.' });
+  }
 
-      try {
-        // Validate that the file exists at the provided path
-        await fs.access(filePath);
-      } catch (error) {
-        return reply.code(400).send({ 
-          error: `File does not exist or is not accessible: ${filePath}` 
-        });
-      }
+  try {
+    const documentId = randomUUID();
+    const fileType = fileName.split('.').pop()?.toLowerCase() as DocumentsTable['fileType'] || 'txt';
 
-      // Extract filename and extension from the file
-      const originalFileName = path.basename(filePath);
-      const fileExtension = path.extname(originalFileName).toLowerCase().replace('.', '');
-      
-      // Validate file type
-      const allowedTypes: DocumentsTable['fileType'][] = ['pdf', 'docx', 'png', 'csv', 'txt', 'md', 'html', 'jpeg'];
-      const fileType: DocumentsTable['fileType'] = allowedTypes.includes(fileExtension as any) 
-        ? fileExtension as DocumentsTable['fileType'] 
-        : 'txt';
+    await db.insertInto('documents').values({
+      id: documentId,
+      fileName: fileName,
+      filePath: filePath,
+      fileType: fileType,
+      status: 'queued',
+      createdAt: new Date().toISOString(),
+      user_description: description,
+      keywords: JSON.stringify(keywords),
+    }).execute();
 
-      // Insert document record using the provided file path
-      const documentId = randomUUID();
-      await db
-        .insertInto('documents')
-        .values({
-          id: documentId,
-          fileName: originalFileName,
-          filePath: filePath, // Store the frontend-provided file path
-          fileType: fileType,
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-          user_description: description || '',
-          keywords: JSON.stringify(keywords || []),
-        })
-        .execute();
+    await db.insertInto('project_documents').values({
+      projectId,
+      documentId,
+    }).execute();
 
-      // Link document to project
-      await db
-        .insertInto('project_documents')
-        .values({
-          projectId,
-          documentId,
-        })
-        .execute();
+    await jobService.createIngestionJob(documentId);
 
-      // Create ingestion job
-      const jobId = await jobService.createIngestionJob(documentId);
+    return reply.code(202).send({
+      message: 'Document accepted and queued for processing.',
+      documentId: documentId
+    });
 
-      return reply.code(202).send({
-        message: 'Document registered and ingestion job queued.',
-        documentId,
-        jobId,
-        filePath: filePath,
-      });
-    }
+  } catch (error: any) {
+    server.log.error(error, 'Failed to create document record');
+    return reply.code(500).send({ error: 'An unexpected error occurred.' });
+  }
+}
   );
 
   /**

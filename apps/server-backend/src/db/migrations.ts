@@ -22,7 +22,7 @@ export async function setupDatabase() {
         .addColumn('fileName', 'text', (col) => col.notNull())
         .addColumn('filePath', 'text', (col) => col.notNull())
         .addColumn('fileType', 'text', (col) => col.notNull())
-        .addColumn('status', 'text', (col) => col.notNull())
+        .addColumn('status', 'text', (col) => col.notNull().defaultTo('queued'))
         .addColumn('createdAt', 'text', (col) => col.notNull())
         .addColumn('user_description', 'text')
         .addColumn('keywords', 'text') // Storing array as a JSON string
@@ -30,18 +30,9 @@ export async function setupDatabase() {
 
     await schema.createTable('project_documents')
         .ifNotExists()
-        .addColumn('projectId', 'text', (col) => col.notNull())
-        .addColumn('documentId', 'text', (col) => col.notNull())
+        .addColumn('projectId', 'text', (col) => col.notNull().references('projects.id'))
+        .addColumn('documentId', 'text', (col) => col.notNull().references('documents.id'))
         .addPrimaryKeyConstraint('project_documents_pk', ['projectId', 'documentId'])
-        .execute();
-
-    await schema.createTable('chunks')
-        .ifNotExists()
-        .addColumn('id', 'text', (col) => col.primaryKey())
-        .addColumn('documentId', 'text', (col) => col.notNull())
-        .addColumn('content', 'text', (col) => col.notNull())
-        .addColumn('vectorId', 'text')
-        .addColumn('metadata', 'text', (col) => col.notNull())
         .execute();
 
     await schema.createTable('jobs')
