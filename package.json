@@ -28,6 +28,5 @@
     "wait-on": "^8.0.4"
   },
   "dependencies": {
-    "@fastify/websocket": "^11.2.0"
   }
 }

@@ -1,5 +1,5 @@
-import { db } from '../db';
-import type { DocumentsTable } from '../db/schema';
+import { db } from '../db/index.js';
+import type { DocumentsTable } from '../db/schema.js';
 import { spawn } from 'child_process';
 import path from 'path';
 import { randomUUID } from 'crypto';

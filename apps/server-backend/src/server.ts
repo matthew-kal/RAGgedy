@@ -1,12 +1,12 @@
 import fastify from 'fastify';
 import websocket from '@fastify/websocket';
-import { websocketService } from './services/websocketService';
+import { websocketService } from './services/websocketService.js';
 
 import cors from '@fastify/cors'; // Import the cors package
-import { setupDatabase } from './db/migrations';
-import { projectRoutes } from './routes/projects';
-import { documentRoutes } from './routes/documents';
-import { jobRunner } from './services/jobRunner';
+import { setupDatabase } from './db/migrations.js';
+import { projectRoutes } from './routes/projects.js';
+import { documentRoutes } from './routes/documents.js';
+import { jobRunner } from './services/jobRunner.js';
 
 const server = fastify({ logger: true });
 

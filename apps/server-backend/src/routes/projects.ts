@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { db } from '../db';
+import { db } from '../db/index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';

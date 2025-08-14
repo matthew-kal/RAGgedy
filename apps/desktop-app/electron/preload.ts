@@ -37,6 +37,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Server port listener
   onSetServerPort: (callback: (port: number) => void) => {
-    ipcRenderer.on('set-server-port', (event, port) => callback(port));
+    ipcRenderer.on('set-server-port', (_, port) => callback(port));
   },
 })

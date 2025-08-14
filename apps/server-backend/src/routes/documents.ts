@@ -2,10 +2,10 @@ import { FastifyInstance } from 'fastify';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { db } from '../db';
-import { jobService } from '../services/jobService';
-import { vectorService } from '../services/vectorService';
-import type { DocumentsTable } from '../db/schema';
+import { db } from '../db/index.js';
+import { jobService } from '../services/jobService.js';
+import { vectorService } from '../services/vectorService.js';
+import type { DocumentsTable } from '../db/schema.js';
 import type { Chunk } from 'shared-types';
 
 interface UploadDocumentRequest {
@@ -17,7 +17,7 @@ interface UploadDocumentRequest {
 export async function documentRoutes(server: FastifyInstance) {
   // Initialize vector service on server start
   server.addHook('onReady', async () => {
-    await vectorService.initialize();
+   // await vectorService.initialize();
   });
 
   // Copy a local file into project directory and create an ingestion job
@@ -122,7 +122,7 @@ async (request, reply) => {
         if (projectIds.length === 0) {
           throw new Error('No project IDs found for document');
         }
-        await vectorService.addDocuments(projectIds[0]!, chunksForDb);
+       // await vectorService.addDocuments(projectIds[0]!, chunksForDb);
 
         await db.updateTable('jobs').set({ status: 'done' }).where('id', '=', jobId).execute();
         await db.updateTable('documents').set({ status: 'indexed' }).where('id', '=', document.id).execute();

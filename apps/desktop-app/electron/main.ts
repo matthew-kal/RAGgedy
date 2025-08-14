@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { promises as fs } from 'fs'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'os'

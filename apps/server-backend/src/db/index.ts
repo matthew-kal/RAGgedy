@@ -1,6 +1,6 @@
 import { Kysely, SqliteDialect } from 'kysely';
 import Database from 'better-sqlite3';
-import { Database as AppDatabase } from './schema'; // Import the master interface
+import { Database as AppDatabase } from './schema.js'; // Import the master interface
 import path from 'path';
 
 // Define the path where the database file will be stored.

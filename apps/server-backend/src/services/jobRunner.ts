@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
-import { db } from '../db';
-import { vectorService } from './vectorService';
-import { websocketService } from './websocketService';
+import { db } from '../db/index.js';
+//import { vectorService } from './vectorService.js';
+import { websocketService } from './websocketService.js';
 import type { Chunk } from 'shared-types';
 import { randomUUID } from 'crypto';
 import path from 'path';
@@ -56,8 +56,8 @@ class JobRunner {
         status: 'parsing',
       });
 
-      // 2. Execute the Python worker
-      await this.executePythonWorker(document, projectId);
+      /* 2. Execute the Python worker
+      await this.executePythonWorker(document, projectId); */
 
       // 3. Finalize the job successfully
       await db.updateTable('jobs').set({ status: 'done' }).where('id', '=', job.id).execute();
@@ -116,7 +116,7 @@ class JobRunner {
                                 keywords: document.keywords ? JSON.parse(document.keywords) : []
                             }
                         };
-                        await vectorService.addDocuments(projectId, [chunkForDb]);
+                       // await vectorService.addDocuments(projectId, [chunkForDb]);
                     } else if (parsed.type === 'image') {
                        // Logic for creating image captioning job
                     }

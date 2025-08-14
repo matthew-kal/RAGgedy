@@ -1,5 +1,5 @@
 // apps/server-backend/src/db/migrations.ts
-import { db } from './index';
+import { db } from './index.js';
 
 export async function setupDatabase() {
     const schema = db.schema;

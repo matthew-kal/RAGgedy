@@ -25,3 +25,40 @@ local-rag-app.db
 .idea/
 LLM/
 venv/
+
+# The problem description is on the left of the image.
+# The user's code is on the right.
+
+def funcPrint(numRow, numColumn):
+    # Loop through each row index 'i'
+    for i in range(numRow):
+        # Start with an empty string for the current row
+        currentRow = ""
+        # Loop through each column index 'j' for the current row
+        for j in range(numColumn):
+            # CORE LOGIC FIX:
+            # Check if the sum of the indices is even or odd
+            if (i + j) % 2 == 0:
+                # If even, add a '#' (since the first char at (0,0) must be #)
+                currentRow += "#"
+            else:
+                # If odd, add a '$'
+                currentRow += "$"
+        
+        # PRINT PLACEMENT FIX:
+        # Print the fully constructed row string once the inner loop is done.
+        print(currentRow)
+
+def main():
+    # Input for numRow
+    numRow = int(input())
+    
+    # Input for numColumn
+    numColumn = int(input())
+    
+    # Just call the function to print the result.
+    # No need to store it in a 'result' variable.
+    funcPrint(numRow, numColumn)
+
+if __name__ == "__main__":
+    main()

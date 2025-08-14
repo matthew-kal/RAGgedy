@@ -14,8 +14,8 @@
     "noUncheckedIndexedAccess": true,
 
     /* Module Options */
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
 
     /* Output Options */
     "outDir": "dist"
