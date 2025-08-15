@@ -17,7 +17,7 @@ interface UploadDocumentRequest {
 export async function documentRoutes(server: FastifyInstance) {
   // Initialize vector service on server start
   server.addHook('onReady', async () => {
-   // await vectorService.initialize();
+   await vectorService.initialize();
   });
 
   // Copy a local file into project directory and create an ingestion job
@@ -122,7 +122,7 @@ async (request, reply) => {
         if (projectIds.length === 0) {
           throw new Error('No project IDs found for document');
         }
-       // await vectorService.addDocuments(projectIds[0]!, chunksForDb);
+       await vectorService.addDocuments(projectIds[0]!, chunksForDb);
 
         await db.updateTable('jobs').set({ status: 'done' }).where('id', '=', jobId).execute();
         await db.updateTable('documents').set({ status: 'indexed' }).where('id', '=', document.id).execute();

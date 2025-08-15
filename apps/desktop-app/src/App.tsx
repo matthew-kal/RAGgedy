@@ -10,11 +10,13 @@ function App() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
 
   useEffect(() => {
-    if ((window as any).electronAPI) {
+      if ((window as any).electronAPI) {
       (window as any).electronAPI.onSetServerPort((port: number) => {
         initializeApi(port);
-      });
-    }
+        })
+      }
+    
+
   }, []);
 
   const handleProjectSelect = (project: Project) => {

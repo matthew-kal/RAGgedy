@@ -29,9 +29,8 @@ let win: BrowserWindow | null
 let serverProcess: ChildProcess
 let serverPort: number | null = null
 
-function startServer(): ChildProcess {
+function startServer(dataPath: string): ChildProcess {
   const serverPath = path.resolve(__dirname, '../../server-backend/dist/server.js'); // Adjust if your output dir is different
-  const dataPath = app.getPath('userData');
 
   const child = fork(serverPath, [], {
     env: { ...process.env, APP_DATA_PATH: dataPath },
@@ -90,19 +89,20 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(() => {
-  serverProcess = startServer();
+app.whenReady().then(async () => {
+  const dataPath = path.join(app.getPath('userData'), 'raggedy'); 
 
-  serverProcess.on('message', (message: { type: string; port?: number }) => {
-    if (message.type === 'serverReady' && message.port) {
-      console.log(`✅ Server is ready on port ${message.port}`);
-      serverPort = message.port;
-
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    }
-  });
+  try {
+    await fs.mkdir(dataPath, { recursive: true });
+    console.log(`✅ Application data directory ensured at: ${dataPath}`);
+  } catch (error) {
+    dialog.showErrorBox(
+      'Fatal Error',
+      `Failed to create application data directory at ${dataPath}. Please check permissions and restart the app.`
+    );
+    app.quit();
+    return;
+  }
 
   // Register IPC handlers
   ipcMain.handle('dialog:openFile', async (event, options) => {
@@ -147,4 +147,23 @@ app.whenReady().then(() => {
     void event
     return os.homedir()
   })
-})
+
+  ipcMain.handle('fs:getAppDataPath', (event) => {
+    void event;
+    return dataPath;
+  });
+
+  serverProcess = startServer(dataPath);
+
+  serverProcess.on('message', (message: { type: string; port?: number }) => {
+    if (message.type === 'serverReady' && message.port) {
+      console.log(`✅ Server is ready on port ${message.port}`);
+      serverPort = message.port;
+
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    }
+  });
+
+});

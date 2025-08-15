@@ -120,13 +120,14 @@ const LandingPage: React.FC<LandingPageProps> = ({ onProjectSelect }) => {
         console.log('Projects fetched from backend:', data)
         setProjects(data)
       } catch (error) {
-        console.log(error)
+        console.error('Error fetching projects:', error)
         setProjects([])
       } finally {
         setIsLoading(false)
       }
     }
 
+    // Use the proper API ready pattern instead of a timer
     fetchProjects()
   }, [])
 

@@ -1,7 +1,6 @@
 import fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import { websocketService } from './services/websocketService.js';
-
 import cors from '@fastify/cors'; // Import the cors package
 import { setupDatabase } from './db/migrations.js';
 import { projectRoutes } from './routes/projects.js';

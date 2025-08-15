@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { db } from '../db/index.js';
-//import { vectorService } from './vectorService.js';
+import { vectorService } from './vectorService.js';
 import { websocketService } from './websocketService.js';
 import type { Chunk } from 'shared-types';
 import { randomUUID } from 'crypto';
@@ -8,7 +8,7 @@ import path from 'path';
 
 class JobRunner {
   private isRunning = false;
-  private pollingInterval = 5000; // 5 seconds
+  private pollingInterval = 1000; // 1 seconds
 
   public start() {
     if (this.isRunning) {
@@ -116,7 +116,7 @@ class JobRunner {
                                 keywords: document.keywords ? JSON.parse(document.keywords) : []
                             }
                         };
-                       // await vectorService.addDocuments(projectId, [chunkForDb]);
+                       await vectorService.addDocuments(projectId, [chunkForDb]);
                     } else if (parsed.type === 'image') {
                        // Logic for creating image captioning job
                     }

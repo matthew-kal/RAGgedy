@@ -19,12 +19,8 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     return ipcRenderer.invoke(channel, ...omit)
   },
 
-  // You can expose other APTs you need here.
-  // ...
 })
 
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
   // File dialog operations
   openFileDialog: (options: any) => ipcRenderer.invoke('dialog:openFile', options),
@@ -37,6 +33,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Server port listener
   onSetServerPort: (callback: (port: number) => void) => {
-    ipcRenderer.on('set-server-port', (_, port) => callback(port));
+    ipcRenderer.on('set-server-port', (_, port) => {
+      console.log('Received server port from main process:', port)
+      
+      // Automatically initialize the API with the correct port
+      if ((window as any).initializeApi) {
+        (window as any).initializeApi(port)
+        console.log('API initialized with port:', port)
+      } else {
+        console.warn('initializeApi not available on window object')
+      }
+      
+      // Also call the callback for any other components that need the port
+      callback(port)
+    })
   },
 })
